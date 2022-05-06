@@ -1,0 +1,27 @@
+nohup: ignoring input
+/data2/maqi/.conda/envs/cleqa/bin/python: Error while finding module specification for '/data2/maqi/LongTextDatasets/LongTextModels/main/main.py' (ModuleNotFoundError: No module named '/data2/maqi/LongTextDatasets/LongTextModels/main/main')
+nohup: ignoring input
+/data2/maqi/.conda/envs/cleqa/bin/python: Error while finding module specification for '/data2/maqi/LongTextDatasets/LongTextModels/main/main.py' (ModuleNotFoundError: No module named '/data2/maqi/LongTextDatasets/LongTextModels/main/main')
+nohup: ignoring input
+Traceback (most recent call last):
+  File "main.py", line 4, in <module>
+    from LongTextModels.config import config
+ModuleNotFoundError: No module named 'LongTextModels'
+nohup: ignoring input
+Traceback (most recent call last):
+  File "/data2/maqi/.conda/envs/cleqa/lib/python3.7/runpy.py", line 183, in _run_module_as_main
+    mod_name, mod_spec, code = _get_module_details(mod_name, _Error)
+  File "/data2/maqi/.conda/envs/cleqa/lib/python3.7/runpy.py", line 109, in _get_module_details
+    __import__(pkg_name)
+  File "/data2/maqi/LongTextDatasets/LongTextModels/main/main.py", line 4, in <module>
+    from LongTextModels.config import config
+ModuleNotFoundError: No module named 'LongTextModels'
+nohup: ignoring input
+Traceback (most recent call last):
+  File "/data2/maqi/.conda/envs/cleqa/lib/python3.7/runpy.py", line 183, in _run_module_as_main
+    mod_name, mod_spec, code = _get_module_details(mod_name, _Error)
+  File "/data2/maqi/.conda/envs/cleqa/lib/python3.7/runpy.py", line 109, in _get_module_details
+    __import__(pkg_name)
+  File "/data2/maqi/LongTextDatasets/LongTextModels/main/main.py", line 4, in <module>
+    from LongTextModels.config import config
+ModuleNotFoundError: No module named 'LongTextModels'
