@@ -77,39 +77,44 @@ class Trainer(object):
         self.train_dataloader = train_dataloader
         t_total = len(train_dataloader) // self.hparams.gradient_accumulation_steps * self.hparams.num_train_epochs
 
+        """
+        Adam
         # Define Loss and Optimizer
         # Prepare optimizer and schedule (linear warmup and decay)
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": 0.0,
-            },
-            {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
-             "weight_decay": 0.0},
-        ]
-        optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8)
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=t_total
-        )
-        # # Define Loss and Optimizer
-        # no_decay = ['bias', 'gamma', 'beta']
-        # param_optimizer = list(self.model.named_parameters())
+        """
+        # no_decay = ["bias", "LayerNorm.weight"]
         # optimizer_grouped_parameters = [
-        #     {'params': [p for n, p in param_optimizer if n not in no_decay], 'weight_decay_rate': 0.01},
-        #     {'params': [p for n, p in param_optimizer if n in no_decay], 'weight_decay_rate': 0.0}
+        #     {
+        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+        #         "weight_decay": 0.0,
+        #     },
+        #     {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+        #      "weight_decay": 0.0},
         # ]
-        # optimizer = BERTAdam(optimizer_grouped_parameters,
-        #                      lr=self.hparams.learning_rate,
-        #                      warmup=self.hparams.warmup_proportion,
-        #                      t_total=t_total)
+        # optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8)
+        # scheduler = get_linear_schedule_with_warmup(
+        #     optimizer, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=t_total
+        # )
 
-        # optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate)
-
+        """
+        BERTAdam
+        # Define Loss and Optimizer
         # Create the learning rate scheduler.
-        # scheduler = get_linear_schedule_with_warmup(optimizer,
-        #                                             num_warmup_steps=0.1 * t_total,  # Default value in run_glue.py
-        #                                             num_training_steps=t_total)
+        """
+        no_decay = ['bias', 'gamma', 'beta']
+        param_optimizer = list(self.model.named_parameters())
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in param_optimizer if n not in no_decay], 'weight_decay_rate': 0.01},
+            {'params': [p for n, p in param_optimizer if n in no_decay], 'weight_decay_rate': 0.0}
+        ]
+        optimizer = BERTAdam(optimizer_grouped_parameters,
+                             lr=self.hparams.learning_rate,
+                             warmup=self.hparams.warmup_proportion,
+                             t_total=t_total)
+
+        scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                    num_warmup_steps=0.1 * t_total,  # Default value in run_glue.py
+                                                    num_training_steps=t_total)
 
         # 加载已训练一部分的最优模型
         # if os.path.isfile(self.hparams.best_model_save_path) and self.hparams.load_half_model:
@@ -139,6 +144,8 @@ class Trainer(object):
             os.makedirs(_log_path)
         if not os.path.exists(self.hparams.tensorboard_path):
             os.makedirs(self.hparams.tensorboard_path)
+        if not os.path.exists(self.hparams.eval_path):
+            os.makedirs(self.hparams.eval_path)
 
     def init_SummaryWriter(self):
         """
@@ -162,12 +169,12 @@ class Trainer(object):
         """
 
         self.log.info('model config output dir: {}'.format(self.hparams.model_config_file_path))
-
+        model_config = {}
+        for k, v in self.hparams.__dict__.items():
+            if not str(k).__contains__('__') and str(k) != 'os' and str(k) != "make_dir":
+                model_config[k] = v
         # 保存config
-        with open(self.hparams.model_config_file_path, 'w') as f:
-            for k, v in self.hparams.__dict__.items():
-                if not str(k).__contains__('__') and str(k) != 'os':
-                    f.write("{}: {}\n".format(k, v))
+        json.dump(model_config, open(self.hparams.model_config_file_path, 'w'), indent=4)
 
     def save_best_model(self, model, optimizer, global_step, epoch):
         """
@@ -294,8 +301,9 @@ class Trainer(object):
                                   bar_format=bar_format)
             epoch_iterator.set_description('Epoch: {}/{}'.format(epoch, total_epoch))  # 设置前缀 一般为epoch的信息
             # TODO train
+            self.model.train()
+            self.optimizer.zero_grad()  # reset gradient
             for step, batch in enumerate(epoch_iterator):
-                self.model.train()
                 batch = tuple(t.to(self.hparams.device) for t in batch)
                 inputs = {
                     "question_id": batch[0],
@@ -305,22 +313,25 @@ class Trainer(object):
                     "supporting_fact_label": batch[4],
                 }
                 loss, _ = self.model(**inputs)
+                # loss regularization
                 if len(self.hparams.gpu_ids) > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
                 if self.hparams.gradient_accumulation_steps > 1:
                     loss = loss / self.hparams.gradient_accumulation_steps
-
-                # self.summery_writer.add_scalar('Train/Loss', loss.item(), global_step=global_step,
-                #                                walltime=None)
+                # back propagation
+                loss.backward()
+                # update parameters of net
                 # 累计一定step 再进行反向传播 梯度清零
                 if (step + 1) % self.hparams.gradient_accumulation_steps == 0:
                     self.summery_writer.add_scalar('Train/Loss', loss.item(), global_step=global_step,
                                                    walltime=None)
+                    # optimizer the net
                     # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.model.zero_grad()
-                    loss.backward()
+                    # self.model.zero_grad() #
+                    # 这里只清除 optimizer 添加到group中的参数梯度即可
                     self.optimizer.step()
                     self.scheduler.step()  # Update learning rate schedule
+                    self.optimizer.zero_grad()  # reset gradient 清空过往梯度，为下一波梯度累加做准备
                     global_step += 1
                 # epoch_iterator.set_postfix(loss=loss.item())
                 UsedTime = "{}".format(str(datetime.utcnow() - train_begin_time).split('.')[0])
@@ -330,7 +341,6 @@ class Trainer(object):
                 lr = "{:10f}".format(self.optimizer.param_groups[0]['lr'])
                 epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), Loss=str(Loss),
                                            lr=str(lr))
-                # epoch_iterator.update(1)
             self.global_step = global_step
 
         # evaluate

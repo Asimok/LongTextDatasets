@@ -124,8 +124,8 @@ class SentenceChoice(BertPreTrainedModel):
             contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
 
         # TODO 新加
-        # Attention
-        states = torch.cat([contexts_embedding, question_embedding], dim=1)
+        # Attention [q,k]
+        states = torch.cat([question_embedding, contexts_embedding], dim=1)
         # states与self.weight_W矩阵相乘，然后做tanh
         u = torch.tanh(torch.matmul(states, self.weight_W))
         # u与self.weight_proj矩阵相乘,得到score
@@ -136,7 +136,8 @@ class SentenceChoice(BertPreTrainedModel):
         scored_x = states * att_score
         # encoding = torch.sum(scored_x, dim=1)
         # 线性层
-
+        # 只取context部分
+        scored_x = scored_x[:, :-question_embedding.shape[1], :]
         supporting_logits = self.decoder1(scored_x)
         supporting_logits = self.decoder2(supporting_logits).squeeze(dim=-1)
         supporting_attention = torch.stack(
@@ -151,15 +152,15 @@ class SentenceChoice(BertPreTrainedModel):
             supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
             supporting_fact_label = supporting_fact_label.view(-1)
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(supporting_logits, supporting_fact_label)
+            # loss = loss_fct(supporting_logits, supporting_fact_label)
 
-            # supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
-            #                                                          torch.full_like(supporting_fact_label, -100))
-            # supporting_fact_label_False = supporting_fact_label.where(supporting_fact_label == 0,
-            #                                                           torch.full_like(supporting_fact_label, -100))
-            # loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
-            # loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
-            # loss = 0.5 * loss_True + 0.5 * loss_False
+            supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
+                                                                     torch.full_like(supporting_fact_label, -100))
+            supporting_fact_label_False = supporting_fact_label.where(supporting_fact_label == 0,
+                                                                      torch.full_like(supporting_fact_label, -100))
+            loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
+            loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
+            loss = 0.7 * loss_True + 0.3 * loss_False
             return loss, None
 
         return None, supporting_logits

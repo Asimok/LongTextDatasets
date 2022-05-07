@@ -26,13 +26,14 @@ def make_dir():
 # maqi
 datasetPath = '/data2/maqi/LongTextDatasets/HotpotQA_datasets/'
 trainFile = 'simplify_hotpot_train_v1.1.json'
-testFile = 'simplify_hotpot_train_v1.1.json'
+testFile = 'simplify_hotpot_dev_fullwiki_v1.json'
+
 pretrainedModelPath = '/data2/wangbingchao/database/bert_pretrained/bert-base-uncased'
 cachePath = '/data2/maqi/LongTextDatasets/LongTextModels/cache'  # 预处理数据的缓存
 
 # 存储路径
 output_dir = '/data2/maqi/LongTextDatasets/LongTextModels/output/'
-current_model = 'exp_5_6_test'  # 不同模型的日志保存目录
+current_model = 'exp_q_lstm_1_layer'  # 不同模型的日志保存目录
 model_saved_path = output_dir + current_model  # 当前训练模型保存路径
 log_path = model_saved_path + '/logs/log.txt'  # 日志保存在当前训练的模型文件夹下
 tensorboard_path = model_saved_path + '/tensorboard_runs'  # output_dir + current_model + tensorboard_path + date
@@ -54,11 +55,11 @@ overwrite_cache = False
 load_half_model = True  # 加载已训练一部分的最优模型
 
 # train
-per_gpu_batch_size = 8  # 每个gpu上的batch
+per_gpu_batch_size = 6  # 每个gpu上的batch
 num_train_epochs = 4
 learning_rate = 1e-4
 warmup_steps = 100
 warmup_proportion = 0.05
-gradient_accumulation_steps = 2
+gradient_accumulation_steps = 2  # 这个操作就相当于将batch_size扩大了gradient_accumulate_steps倍
 max_query_length = 64
 seed = 703
