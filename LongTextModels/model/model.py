@@ -8,6 +8,7 @@ from torch.nn import CrossEntropyLoss, BCELoss, BCEWithLogitsLoss
 from transformers import BertPreTrainedModel, BertModel
 from transformers.models.bart.modeling_bart import BartAttention
 
+from LongTextModels.config.config import true_loss_proportion
 from LongTextModels.tools.logger import get_logger
 
 logger = get_logger(log_name="model")
@@ -59,7 +60,6 @@ class SentenceChoice(BertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         bertModel = BertModel(config, add_pooling_layer=False)
-
         self.hidden_size = config.hidden_size
         self.num_layers = 3
         self.bert = bertModel.embeddings.word_embeddings
@@ -67,18 +67,26 @@ class SentenceChoice(BertPreTrainedModel):
             input_size=self.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
             num_layers=self.num_layers,  # 堆叠层数
+            dropout=0.1,  # 遗忘门参数
+            bidirectional=True,  # 双向LSTM
+            batch_first=True,
+        )
+        self.c_lstm = nn.LSTM(
+            input_size=self.hidden_size,  # 输入大小为转化后的词向量
+            hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
+            num_layers=self.num_layers,  # 堆叠层数
             dropout=0.5,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
-        self.c_lstm = nn.ModuleList(nn.LSTM(
-            input_size=config.hidden_size * 2,  # 输入大小为转化后的词向量
-            hidden_size=config.hidden_size // 2,  # 隐藏层大小
-            num_layers=1,  # 堆叠层数
-            dropout=0.5,  # 遗忘门参数
-            bidirectional=True,  # 双向LSTM
-            batch_first=True,
-        ) for _ in range(self.num_layers))
+        # self.c_lstm = nn.ModuleList(nn.LSTM(
+        #     input_size=config.hidden_size * 2,  # 输入大小为转化后的词向量
+        #     hidden_size=config.hidden_size // 2,  # 隐藏层大小
+        #     num_layers=3,  # 堆叠层数
+        #     dropout=0.5,  # 遗忘门参数
+        #     bidirectional=True,  # 双向LSTM
+        #     batch_first=True,
+        # ) for _ in range(self.num_layers))
 
         # Attention
         # weight_w即为公式中的h_s(参考系)
@@ -91,12 +99,9 @@ class SentenceChoice(BertPreTrainedModel):
         # 双向 lstm 维度x2
         self.attention = BartAttention(embed_dim=self.hidden_size * 2, num_heads=1)
 
-        # self.decoder1 = nn.Linear(self.hidden_size * 1, self.hidden_size)
-        # self.decoder2 = nn.Linear(self.hidden_size, 1)
-
         self.decoder1 = BertFeedForward(config, input_size=self.hidden_size * 1,
-                                        intermediate_size=self.hidden_size, output_size=self.hidden_size)
-        self.decoder2 = BertFeedForward(config, input_size=self.hidden_size,
+                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 2)
+        self.decoder2 = BertFeedForward(config, input_size=self.hidden_size * 2,
                                         intermediate_size=self.hidden_size, output_size=1)
 
         self.init_weights()
@@ -114,14 +119,15 @@ class SentenceChoice(BertPreTrainedModel):
         contexts_embedding = self.bert(contexts_id)
         # LSTM
         question_embedding, _ = self.q_lstm(question_embedding)
+        contexts_embedding, _ = self.c_lstm(contexts_embedding)
 
-        for i in range(self.num_layers):
-            tree_embedding = torch.stack(
-                [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
-                 range(batch)],
-                dim=0)
-            new_contexts_embedding = torch.cat([contexts_embedding, tree_embedding], dim=2)
-            contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
+        # for i in range(self.num_layers):
+        #     tree_embedding = torch.stack(
+        #         [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
+        #          range(batch)],
+        #         dim=0)
+        #     new_contexts_embedding = torch.cat([contexts_embedding, tree_embedding], dim=2)
+        #     contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
 
         # TODO 新加
         # Attention [q,k]
@@ -144,6 +150,15 @@ class SentenceChoice(BertPreTrainedModel):
             [torch.index_select(input=supporting_logits[i], dim=0, index=supporting_position[i]) for i in
              range(batch)],
             dim=0)
+
+        # supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
+        #     dim=-1)  # batch  x class x seq
+        first_signal = [(2 * i)+1 for i in range(supporting_length)]
+        first_signal = torch.tensor(first_signal).to('cuda')
+        supporting_logits = torch.stack(
+            [torch.index_select(input=supporting_attention[i], dim=0, index=first_signal) for i in
+             range(batch)],
+            dim=0)
         supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
             dim=-1)  # batch  x class x seq
 
@@ -151,16 +166,24 @@ class SentenceChoice(BertPreTrainedModel):
             # 对于序列标注来说，需要reshape一下
             supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
             supporting_fact_label = supporting_fact_label.view(-1)
-            loss_fct = CrossEntropyLoss()
-            # loss = loss_fct(supporting_logits, supporting_fact_label)
 
-            supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
-                                                                     torch.full_like(supporting_fact_label, -100))
-            supporting_fact_label_False = supporting_fact_label.where(supporting_fact_label == 0,
-                                                                      torch.full_like(supporting_fact_label, -100))
-            loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
-            loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
-            loss = 0.7 * loss_True + 0.3 * loss_False
+            # BCE Loss
+            # supporting_fact_label_ignore_100 = torch.where(supporting_fact_label == -100,
+            #                                                0, supporting_fact_label)
+            # loss_fct = BCEWithLogitsLoss()
+            # loss = loss_fct(supporting_logits, supporting_fact_label_ignore_100.float())
+
+            # CrossEntropyLoss
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(supporting_logits, supporting_fact_label)
+
+            # supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
+            #                                                          torch.full_like(supporting_fact_label, -100))
+            # supporting_fact_label_False = supporting_fact_label.where(supporting_fact_label == 0,
+            #                                                           torch.full_like(supporting_fact_label, -100))
+            # loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
+            # loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
+            # loss = true_loss_proportion * loss_True + (1 - true_loss_proportion) * loss_False
             return loss, None
 
         return None, supporting_logits

@@ -13,7 +13,6 @@ from transformers import AutoTokenizer, AutoConfig, get_linear_schedule_with_war
 
 from LongTextModels.dataloader.dataLoader import load_dataset
 from LongTextModels.model.model import SentenceChoice
-from LongTextModels.model.optimization import BERTAdam
 from LongTextModels.tools.logger import get_logger
 from LongTextModels.tools.squad import makeSquad
 
@@ -82,39 +81,21 @@ class Trainer(object):
         # Define Loss and Optimizer
         # Prepare optimizer and schedule (linear warmup and decay)
         """
-        # no_decay = ["bias", "LayerNorm.weight"]
-        # optimizer_grouped_parameters = [
-        #     {
-        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
-        #         "weight_decay": 0.0,
-        #     },
-        #     {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
-        #      "weight_decay": 0.0},
-        # ]
-        # optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8)
-        # scheduler = get_linear_schedule_with_warmup(
-        #     optimizer, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=t_total
-        # )
-
-        """
-        BERTAdam
-        # Define Loss and Optimizer
-        # Create the learning rate scheduler.
-        """
-        no_decay = ['bias', 'gamma', 'beta']
-        param_optimizer = list(self.model.named_parameters())
+        no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer if n not in no_decay], 'weight_decay_rate': 0.01},
-            {'params': [p for n, p in param_optimizer if n in no_decay], 'weight_decay_rate': 0.0}
+            {
+                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+            {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+             "weight_decay": 0.0},
         ]
-        optimizer = BERTAdam(optimizer_grouped_parameters,
-                             lr=self.hparams.learning_rate,
-                             warmup=self.hparams.warmup_proportion,
-                             t_total=t_total)
-
-        scheduler = get_linear_schedule_with_warmup(optimizer,
-                                                    num_warmup_steps=0.1 * t_total,  # Default value in run_glue.py
-                                                    num_training_steps=t_total)
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8,
+                          correct_bias=False)  # 要重现BertAdam特定的行为，请设置correct_bias = False
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer, num_warmup_steps=self.hparams.warmup_proportion * t_total, num_training_steps=t_total
+        )
+        # num_warmup_steps=0.1*t_total 表示全部训练步骤的前warmup_proportion %，在这一阶段，学习率线性增加；此后，学习率线性衰减。
 
         # 加载已训练一部分的最优模型
         # if os.path.isfile(self.hparams.best_model_save_path) and self.hparams.load_half_model:
@@ -292,6 +273,7 @@ class Trainer(object):
         return results
 
     def run_train_epoch(self, this_epoch, best_acc, train_begin_time):
+        sum_len = []
         epoch = self.global_epoch + this_epoch
         global_step = self.global_step
         total_epoch = int(self.hparams.num_train_epochs)
@@ -312,6 +294,11 @@ class Trainer(object):
                     "supporting_position": batch[3],
                     "supporting_fact_label": batch[4],
                 }
+                b_batch = batch[4].tolist()
+                for b in b_batch:
+                    sum1 = [i for i in b if i == 1]
+                    sum0 = [i for i in b if i == 0]
+                    sum_len.append(len(sum1) / len(sum0))
                 loss, _ = self.model(**inputs)
                 # loss regularization
                 if len(self.hparams.gpu_ids) > 1:
@@ -325,12 +312,15 @@ class Trainer(object):
                 if (step + 1) % self.hparams.gradient_accumulation_steps == 0:
                     self.summery_writer.add_scalar('Train/Loss', loss.item(), global_step=global_step,
                                                    walltime=None)
+                    # TODO 暂时不能加梯度裁剪
+                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                    #                                max_norm=1.0)  # 梯度裁剪不再在AdamW中了(因此你可以毫无问题地使用放大器)
+
                     # optimizer the net
-                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    # self.model.zero_grad() #
-                    # 这里只清除 optimizer 添加到group中的参数梯度即可
                     self.optimizer.step()
                     self.scheduler.step()  # Update learning rate schedule
+                    # self.model.zero_grad() #
+                    # 这里只清除 optimizer 添加到group中的参数梯度即可
                     self.optimizer.zero_grad()  # reset gradient 清空过往梯度，为下一波梯度累加做准备
                     global_step += 1
                 # epoch_iterator.set_postfix(loss=loss.item())
@@ -342,7 +332,9 @@ class Trainer(object):
                 epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), Loss=str(Loss),
                                            lr=str(lr))
             self.global_step = global_step
-
+        print(sum_len)
+        np_len = np.array(sum_len)
+        print(np_len.mean())
         # evaluate
         if self.hparams.do_test:
             self.log.info("***** Running evaluation *****")
