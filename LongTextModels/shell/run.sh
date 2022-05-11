@@ -1,4 +1,5 @@
 /data2/maqi/LongTextDatasets/LongTextModels/main/main.py
+cp
 
 nohup python -m LongTextModels.main.main.py >> log.txt 2>&1 &
 

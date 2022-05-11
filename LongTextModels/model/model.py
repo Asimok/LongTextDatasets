@@ -100,8 +100,8 @@ class SentenceChoice(BertPreTrainedModel):
         self.attention = BartAttention(embed_dim=self.hidden_size * 2, num_heads=1)
 
         self.decoder1 = BertFeedForward(config, input_size=self.hidden_size * 1,
-                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 2)
-        self.decoder2 = BertFeedForward(config, input_size=self.hidden_size * 2,
+                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 3)
+        self.decoder2 = BertFeedForward(config, input_size=self.hidden_size * 3,
                                         intermediate_size=self.hidden_size, output_size=1)
 
         self.init_weights()
@@ -142,8 +142,8 @@ class SentenceChoice(BertPreTrainedModel):
         scored_x = states * att_score
         # encoding = torch.sum(scored_x, dim=1)
         # 线性层
-        # 只取context部分
-        scored_x = scored_x[:, :-question_embedding.shape[1], :]
+        # 只取context部分 [q,k]
+        scored_x = scored_x[:, question_embedding.shape[1]:, :]
         supporting_logits = self.decoder1(scored_x)
         supporting_logits = self.decoder2(supporting_logits).squeeze(dim=-1)
         supporting_attention = torch.stack(
@@ -153,19 +153,33 @@ class SentenceChoice(BertPreTrainedModel):
 
         # supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
         #     dim=-1)  # batch  x class x seq
-        first_signal = [(2 * i)+1 for i in range(supporting_length)]
-        first_signal = torch.tensor(first_signal).to('cuda')
-        supporting_logits = torch.stack(
-            [torch.index_select(input=supporting_attention[i], dim=0, index=first_signal) for i in
+        """
+        两个下标[s,e]标志句子的起始和结束位置
+        这里采用平均池化 获得句子的表示
+        """
+        start_signal = [(2 * i) for i in range(supporting_length)]
+        start_signal = torch.tensor(start_signal).to('cuda')
+        end_signal = [(2 * i) + 1 for i in range(supporting_length)]
+        end_signal = torch.tensor(end_signal).to('cuda')
+
+        supporting_logits_start = torch.stack(
+            [torch.index_select(input=supporting_attention[i], dim=0, index=start_signal) for i in
              range(batch)],
             dim=0)
-        supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
-            dim=-1)  # batch  x class x seq
+        supporting_logits_end = torch.stack(
+            [torch.index_select(input=supporting_attention[i], dim=0, index=end_signal) for i in
+             range(batch)],
+            dim=0)
+        # supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
+        #     dim=-1)  # batch  x class x seq
+
+        # 堆叠矩阵 batch  x class x seq
+        supporting_logits = torch.stack((supporting_logits_start, supporting_logits_end), dim=1)
 
         if supporting_fact_label is not None:
             # 对于序列标注来说，需要reshape一下
-            supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
-            supporting_fact_label = supporting_fact_label.view(-1)
+            # supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
+            # supporting_fact_label = supporting_fact_label.view(-1)
 
             # BCE Loss
             # supporting_fact_label_ignore_100 = torch.where(supporting_fact_label == -100,

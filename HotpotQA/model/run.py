@@ -72,6 +72,8 @@ def train(args):
 
     for epoch in range(int(args.num_train_epochs)):
         epoch_iterator = tqdm(train_dataloader, desc="Epoch " + str(epoch))
+        # all_loss = 0.0
+        # at = 0
         for step, batch in enumerate(epoch_iterator):
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -92,15 +94,28 @@ def train(args):
                 loss = loss / args.gradient_accumulation_steps
 
             loss.backward()
-
+            # t = 0
+            # for sfl in batch[4].cpu().detach().tolist():
+            #     for sf in sfl:
+            #         if sf != -100:
+            #             t += 1
+            # all_loss += (loss.item() * t)
+            # at += t
+            # all_loss/=
+            # print(t)
             epoch_iterator.set_postfix(loss=loss.item())
-
+            # epoch_iterator.set_postfix(loss=loss.item())
+            # print(loss.item()/t)
+            # print(all_loss / at)
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
+
+            # if step == 100:
+            #     test(args, model, savedir="epoch-{}".format(epoch))
 
         savePath = os.path.join(args.savePath, "epoch-{}".format(epoch))
         model_to_save = model.module if hasattr(model, "module") else model
@@ -145,12 +160,23 @@ def test(args, model=None, savedir=""):
                 "supporting_position": batch[3],
             }
             _, supporting_logits = model(**inputs)
-        choice = supporting_logits[:, 1, :] > supporting_logits[:, 0, :]
-        choice = choice.detach().cpu().tolist()
-        supporting_position = batch[3].detach().cpu().tolist()
-        for c, s in zip(choice, supporting_position):
-            nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
-            choiceList.append(nc)
+        if args.testFunction == '0':
+            choice = supporting_logits[:, 1, :] > supporting_logits[:, 0, :]
+            choice = choice.detach().cpu().tolist()
+            supporting_position = batch[3].detach().cpu().tolist()
+            for c, s in zip(choice, supporting_position):
+                nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                choiceList.append(nc)
+        elif args.testFunction == '1':
+            supporting_logits = supporting_logits.softmax(dim=1)
+            choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()
+            supporting_position = batch[3].detach().cpu().tolist()
+            for c, s in zip(choice_logits, supporting_position):
+                nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                choiceList.append(nc)
+        else:
+            logger.info("Error testFunction {}.".format(args.testFunction))
+            return
 
     logger.info("Evaluation done.")
 
@@ -162,20 +188,43 @@ def test(args, model=None, savedir=""):
     for [_id, context_list, question, supporting_facts_list, answer], choice in tqdm(zip(examples, choiceList), desc="Computing"):
         choiceDict[_id] = choice
         assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
-        _is_all_rigth = True
-        new_context_list = []
-        for context, fact, c in zip(context_list, supporting_facts_list, choice):
-            if fact == c:
-                right += 1
+        if args.testFunction == '0':
+            _is_all_rigth = True
+            new_context_list = []
+            for context, fact, c in zip(context_list, supporting_facts_list, choice):
+                if fact == c:
+                    right += 1
+                else:
+                    wrong += 1
+                    _is_all_rigth = False
+                if c:
+                    new_context_list.append(context)
+            if _is_all_rigth:
+                all_right += 1
             else:
-                wrong += 1
-                _is_all_rigth = False
-            if c:
-                new_context_list.append(context)
-        if _is_all_rigth:
-            all_right += 1
+                has_wrong += 1
+        elif args.testFunction == '1':
+            _is_rigth = []
+            new_context_list = []
+            choose_best = sorted(range(len(choice)), key=choice.__getitem__, reverse=True)[:args.bestN]
+            for cb in choose_best:
+                new_context_list.append(context_list[cb])
+                _rigth = supporting_facts_list[cb]
+                _is_rigth.append(_rigth)
+            fact_count = supporting_facts_list.count(1)
+            right_count = _is_rigth.count(1)
+            if right_count == fact_count or right_count == args.bestN:
+                all_right += 1
+                right += args.bestN
+            else:
+                has_wrong += 1
+                _wrong = min(fact_count - right_count, args.bestN - right_count)
+                wrong += _wrong
+                right += args.bestN - _wrong
         else:
-            has_wrong += 1
+            logger.info("Error testFunction {}.".format(args.testFunction))
+            return
+
         datas.append(makeSquad(_id, new_context_list, question, answer))
 
     newSquadDataset = {'version': "HotpotQA", 'data': datas}
@@ -211,7 +260,9 @@ if __name__ == '__main__':
     parser.add_argument('--modelPath', type=str, required=True)
     parser.add_argument('--savePath', type=str, required=True)
     parser.add_argument('--tempPath', type=str, required=True)
-    parser.add_argument("--per_gpu_batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.")
+    parser.add_argument('--testFunction', default='0', type=str)
+    parser.add_argument('--bestN', default=4, type=int, help="If use testFunction 1, chooose best N sentence as new passage.")
+    parser.add_argument("--per_gpu_batch_size", default=8, type=int)
     parser.add_argument("--num_train_epochs", default=4, type=int, help="Total number of training epochs to perform.")
     parser.add_argument("--learning_rate", default=1e-2, type=float, help="The initial learning rate for Adam.")
     parser.add_argument("--warmup_steps", default=1000, type=int, help="Linear warmup over warmup_steps.")

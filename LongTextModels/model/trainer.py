@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import random
@@ -98,13 +99,15 @@ class Trainer(object):
         # num_warmup_steps=0.1*t_total 表示全部训练步骤的前warmup_proportion %，在这一阶段，学习率线性增加；此后，学习率线性衰减。
 
         # 加载已训练一部分的最优模型
-        # if os.path.isfile(self.hparams.best_model_save_path) and self.hparams.load_half_model:
-        #     checkpoint = torch.load(self.hparams.best_model_save_path)
-        #     optimizer.load_state_dict(checkpoint['optimizer'])
-        #     self.log.info("Load optimizer from fine-turned checkpoint: '{}' (step {}, epoch {})"
-        #                   .format(self.hparams.best_model_save_path, checkpoint['step'], checkpoint['epoch']))
-        #     global_step = checkpoint['step']
-        #     global_epoch = checkpoint['epoch'] + 1
+        if os.path.isfile(self.hparams.best_model_save_path) and self.hparams.load_part_model:
+            self.log.info('Load part model from :' + self.hparams.best_model_save_path)
+            checkpoint = torch.load(self.hparams.best_model_save_path)
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            self.log.info("Load optimizer from fine-turned checkpoint: '{}' (step {}, epoch {})"
+                          .format(self.hparams.best_model_save_path, checkpoint['step'], checkpoint['epoch']))
+            global_step = checkpoint['step']
+            global_epoch = checkpoint['epoch'] + 1
+            self.log.info("Load model finished!!!")
 
         self.log.info("Define model finished!!!")
 
@@ -183,13 +186,13 @@ class Trainer(object):
         batch_size = self.hparams.per_gpu_batch_size * max(1, len(self.hparams.gpu_ids))
         eval_sampler = SequentialSampler(dataset)
         eval_dataloader = DataLoader(dataset, sampler=eval_sampler, batch_size=batch_size)
-        # if model is None:
-        #     self.log.info("Load model from file %s ...", self.hparams.best_model_save_path)
-        #     config = AutoConfig.from_pretrained(self.hparams.pretrainedModelPath)
-        #     model = SentenceChoice.from_pretrained(self.hparams.best_model_save_path, from_tf=False, config=config)
-        #     model.to(self.hparams.device)
-        #     if len(self.hparams.gpu_ids) > 1 and not isinstance(model, torch.nn.DataParallel):
-        #         model = torch.nn.DataParallel(model)
+        if model is None:
+            self.log.info("Load model from file %s ...", self.hparams.best_model_save_path)
+            config = AutoConfig.from_pretrained(self.hparams.pretrainedModelPath)
+            model = SentenceChoice.from_pretrained(self.hparams.best_model_save_path, from_tf=False, config=config)
+            model.to(self.hparams.device)
+            if len(self.hparams.gpu_ids) > 1 and not isinstance(model, torch.nn.DataParallel):
+                model = torch.nn.DataParallel(model)
 
         self.log.info("***** Running test *****")
         self.log.info("Num examples = %d", len(dataset))
@@ -209,42 +212,80 @@ class Trainer(object):
                     "supporting_position": batch[3],
                 }
                 _, supporting_logits = model(**inputs)
-            choice = supporting_logits[:, 1, :] > supporting_logits[:, 0, :]
-            choice = choice.detach().cpu().tolist()
-            supporting_position = batch[3].detach().cpu().tolist()
-            for c, s in zip(choice, supporting_position):
-                nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
-                choiceList.append(nc)
+            if self.hparams.testFunction == '0':
+                choice = supporting_logits[:, 1, :] > supporting_logits[:, 0, :]
+                choice = choice.detach().cpu().tolist()
+                supporting_position = batch[3].detach().cpu().tolist()
+                for c, s in zip(choice, supporting_position):
+                    nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                    choiceList.append(nc)
+            elif self.hparams.testFunction == '1':
+                supporting_logits = supporting_logits.softmax(dim=1)
+                choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()
+                supporting_position = batch[3].detach().cpu().tolist()
+                for c, s in zip(choice_logits, supporting_position):
+                    nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                    choiceList.append(nc)
+            else:
+                self.log.info("Error testFunction {}.".format(self.hparams.testFunction))
+                return
 
         self.log.info("Evaluation done.")
 
         choiceDict = {}
         right, wrong = 0, 0
         all_right, has_wrong = 0, 0
-        data_s = []
+        datas = []
         self.log.info("Evaluate EM and Compute new dataset.")
         for [_id, context_list, question, supporting_facts_list, answer], choice in tqdm(zip(examples, choiceList),
                                                                                          desc="Computing"):
-            choiceDict[_id] = choice
+            if len(choice) == 0:
+                continue
+            temp_choice = copy.deepcopy(choice)
+            # choiceDict[_id] = choice # 概率
             assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
-            _is_all_rigth = True
-            new_context_list = []
-            for context, fact, c in zip(context_list, supporting_facts_list, choice):
-                if fact == c:
-                    right += 1
+            if self.hparams.testFunction == '0':
+                _is_all_rigth = True
+                new_context_list = []
+                for context, fact, c in zip(context_list, supporting_facts_list, choice):
+                    if fact == c:
+                        right += 1
+                    else:
+                        wrong += 1
+                        _is_all_rigth = False
+                    if c:
+                        new_context_list.append(context)
+                if _is_all_rigth:
+                    all_right += 1
                 else:
-                    wrong += 1
-                    _is_all_rigth = False
-                if c:
-                    new_context_list.append(context)
-            if _is_all_rigth:
-                all_right += 1
+                    has_wrong += 1
+            elif self.hparams.testFunction == '1':
+                _is_rigth = []
+                new_context_list = []
+                choose_best = sorted(range(len(choice)), key=choice.__getitem__, reverse=True)[:self.hparams.bestN]
+                bottom = choice[choose_best[-1]]
+                temp_choice = [True if i >= bottom else False for i in choice]
+                for cb in choose_best:
+                    new_context_list.append(context_list[cb])
+                    _rigth = supporting_facts_list[cb]
+                    _is_rigth.append(_rigth)
+                fact_count = supporting_facts_list.count(1)
+                right_count = _is_rigth.count(1)
+                if right_count == fact_count or right_count == self.hparams.bestN:
+                    all_right += 1
+                    right += self.hparams.bestN
+                else:
+                    has_wrong += 1
+                    _wrong = min(fact_count - right_count, self.hparams.bestN - right_count)
+                    wrong += _wrong
+                    right += self.hparams.bestN - _wrong
             else:
-                has_wrong += 1
-            data_s.append(makeSquad(_id, new_context_list, question, answer))
+                self.log.info("Error testFunction {}.".format(self.hparams.testFunction))
+                return
+            choiceDict[_id] = temp_choice
+            datas.append(makeSquad(_id, new_context_list, question, answer))
 
-        newSquadDataset = {'version': "HotpotQA", 'data': data_s}
-
+        newSquadDataset = {'version': "HotpotQA", 'data': datas}
         self.log.info("Save predictions.")
         # 新建文件夹
         out_path = os.path.join(self.hparams.eval_path, save_dir)
@@ -273,7 +314,7 @@ class Trainer(object):
         return results
 
     def run_train_epoch(self, this_epoch, best_acc, train_begin_time):
-        sum_len = []
+        # sum_len = []
         epoch = self.global_epoch + this_epoch
         global_step = self.global_step
         total_epoch = int(self.hparams.num_train_epochs)
@@ -295,10 +336,10 @@ class Trainer(object):
                     "supporting_fact_label": batch[4],
                 }
                 b_batch = batch[4].tolist()
-                for b in b_batch:
-                    sum1 = [i for i in b if i == 1]
-                    sum0 = [i for i in b if i == 0]
-                    sum_len.append(len(sum1) / len(sum0))
+                # for b in b_batch:
+                #     sum1 = [i for i in b if i == 1]
+                #     sum0 = [i for i in b if i == 0]
+                #     sum_len.append(len(sum1) / len(sum0))
                 loss, _ = self.model(**inputs)
                 # loss regularization
                 if len(self.hparams.gpu_ids) > 1:
@@ -332,9 +373,10 @@ class Trainer(object):
                 epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), Loss=str(Loss),
                                            lr=str(lr))
             self.global_step = global_step
-        print(sum_len)
-        np_len = np.array(sum_len)
-        print(np_len.mean())
+        # 原始样本中正负样本的比例
+        # print(sum_len)
+        # np_len = np.array(sum_len)
+        # print(np_len.mean())
         # evaluate
         if self.hparams.do_test:
             self.log.info("***** Running evaluation *****")
