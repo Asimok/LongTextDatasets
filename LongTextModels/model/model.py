@@ -152,12 +152,6 @@ class SentenceChoice(BertPreTrainedModel):
         两个下标[s,e]标志句子的起始和结束位置
         这里采用平均池化 获得句子的表示
         """
-        # 取句子头尾的集合
-        # supporting_attention = torch.stack(
-        #     [torch.index_select(input=supporting_logits[i], dim=0, index=supporting_position[i]) for i in
-        #      range(batch)],
-        #     dim=0)
-
         # 单独取出句子头尾
         start_signal = torch.tensor([(2 * i) for i in range(supporting_length)]).to(config.device)
         end_signal = torch.tensor([(2 * i) + 1 for i in range(supporting_length)]).to(config.device)
@@ -169,21 +163,21 @@ class SentenceChoice(BertPreTrainedModel):
             [torch.index_select(input=supporting_position[i], dim=0, index=end_signal) for i in
              range(batch)],
             dim=0)
+        # 切片取出整个句子的tensor 再做平均池化
+        sentences = []
+        for i in range(batch):
+            supporting_logits_batch = supporting_logits[i]
+            support = []
+            for j in range(len(start_sentence_supporting_position[i])):
+                s = start_sentence_supporting_position[i][j]
+                e = end_sentence_supporting_position[i][j]
+                support.append(torch.mean(supporting_logits_batch[s:e, :], dim=0))
+            support_tensor = torch.stack(support, dim=0)
+            sentences.append(support_tensor)
+        supporting_logits_sentence = torch.stack(sentences, dim=0)
 
-        supporting_logits_start = torch.stack(
-            [torch.index_select(input=supporting_logits[i], dim=0, index=start_sentence_supporting_position[i]) for i in
-             range(batch)],
-            dim=0)
-        supporting_logits_end = torch.stack(
-            [torch.index_select(input=supporting_logits[i], dim=0, index=end_sentence_supporting_position[i]) for i in
-             range(batch)],
-            dim=0)
-
-        # 头尾表示加起来取平均值
-        supporting_logits_add = torch.add(supporting_logits_start, supporting_logits_end)
-        supporting_logits_add = torch.div(supporting_logits_add, 2)
         # 转换为  batch  x class x seq
-        supporting_logits_for_loss = supporting_logits_add.permute(0, 2, 1)
+        supporting_logits_for_loss = supporting_logits_sentence.permute(0, 2, 1)
 
         if supporting_fact_label is not None:
             # 对于序列标注来说，需要reshape一下

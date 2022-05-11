@@ -20,20 +20,20 @@ def make_dir():
 
 # 资源路径
 # wbc
-# datasetPath = '/data2/wangbingchao/dataset/HotpotQA/'
-# trainFile = 'hotpot_train_v1.1.json'
-# testFile = 'hotpot_dev_fullwiki_v1.json'
+datasetPath = '/data2/wangbingchao/dataset/HotpotQA/'
+trainFile = 'hotpot_train_v1.1.json'
+testFile = 'hotpot_dev_fullwiki_v1.json'
 # maqi
-datasetPath = '/data2/maqi/LongTextDatasets/HotpotQA_datasets/'
-trainFile = 'simplify_hotpot_train_v1.1.json'
-testFile = 'simplify_hotpot_dev_fullwiki_v1.json'
+# datasetPath = '/data2/maqi/LongTextDatasets/HotpotQA_datasets/'
+# trainFile = 'simplify_hotpot_train_v1.1.json'
+# testFile = 'simplify_hotpot_dev_fullwiki_v1.json'
 
 pretrainedModelPath = '/data2/wangbingchao/database/bert_pretrained/bert-base-uncased'
 cachePath = '/data2/maqi/LongTextDatasets/LongTextModels/cache'  # 预处理数据的缓存
 
 # 存储路径
 output_dir = '/data2/maqi/LongTextDatasets/LongTextModels/output/'
-current_model = 'exp_q_lstm_3_layer'  # 不同模型的日志保存目录
+current_model = 'mean_pooling'  # 不同模型的日志保存目录
 model_saved_path = output_dir + current_model  # 当前训练模型保存路径
 log_path = model_saved_path + '/logs/log.txt'  # 日志保存在当前训练的模型文件夹下
 tensorboard_path = model_saved_path + '/tensorboard_runs'  # output_dir + current_model + tensorboard_path + date
