@@ -8,6 +8,7 @@ from torch.nn import CrossEntropyLoss, BCELoss, BCEWithLogitsLoss
 from transformers import BertPreTrainedModel, BertModel
 from transformers.models.bart.modeling_bart import BartAttention
 
+from LongTextModels.config import config
 from LongTextModels.config.config import true_loss_proportion
 from LongTextModels.tools.logger import get_logger
 
@@ -102,7 +103,7 @@ class SentenceChoice(BertPreTrainedModel):
         self.decoder1 = BertFeedForward(config, input_size=self.hidden_size * 1,
                                         intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 3)
         self.decoder2 = BertFeedForward(config, input_size=self.hidden_size * 3,
-                                        intermediate_size=self.hidden_size, output_size=1)
+                                        intermediate_size=self.hidden_size, output_size=2)  # 二分类
 
         self.init_weights()
 
@@ -145,36 +146,44 @@ class SentenceChoice(BertPreTrainedModel):
         # 只取context部分 [q,k]
         scored_x = scored_x[:, question_embedding.shape[1]:, :]
         supporting_logits = self.decoder1(scored_x)
-        supporting_logits = self.decoder2(supporting_logits).squeeze(dim=-1)
-        supporting_attention = torch.stack(
-            [torch.index_select(input=supporting_logits[i], dim=0, index=supporting_position[i]) for i in
-             range(batch)],
-            dim=0)
+        supporting_logits = self.decoder2(supporting_logits)
 
-        # supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
-        #     dim=-1)  # batch  x class x seq
         """
         两个下标[s,e]标志句子的起始和结束位置
         这里采用平均池化 获得句子的表示
         """
-        start_signal = [(2 * i) for i in range(supporting_length)]
-        start_signal = torch.tensor(start_signal).to('cuda')
-        end_signal = [(2 * i) + 1 for i in range(supporting_length)]
-        end_signal = torch.tensor(end_signal).to('cuda')
+        # 取句子头尾的集合
+        # supporting_attention = torch.stack(
+        #     [torch.index_select(input=supporting_logits[i], dim=0, index=supporting_position[i]) for i in
+        #      range(batch)],
+        #     dim=0)
+
+        # 单独取出句子头尾
+        start_signal = torch.tensor([(2 * i) for i in range(supporting_length)]).to(config.device)
+        end_signal = torch.tensor([(2 * i) + 1 for i in range(supporting_length)]).to(config.device)
+        start_sentence_supporting_position = torch.stack(
+            [torch.index_select(input=supporting_position[i], dim=0, index=start_signal) for i in
+             range(batch)],
+            dim=0)
+        end_sentence_supporting_position = torch.stack(
+            [torch.index_select(input=supporting_position[i], dim=0, index=end_signal) for i in
+             range(batch)],
+            dim=0)
 
         supporting_logits_start = torch.stack(
-            [torch.index_select(input=supporting_attention[i], dim=0, index=start_signal) for i in
+            [torch.index_select(input=supporting_logits[i], dim=0, index=start_sentence_supporting_position[i]) for i in
              range(batch)],
             dim=0)
         supporting_logits_end = torch.stack(
-            [torch.index_select(input=supporting_attention[i], dim=0, index=end_signal) for i in
+            [torch.index_select(input=supporting_logits[i], dim=0, index=end_sentence_supporting_position[i]) for i in
              range(batch)],
             dim=0)
-        # supporting_logits = supporting_attention.reshape(batch, 2, supporting_length, -1).squeeze(
-        #     dim=-1)  # batch  x class x seq
 
-        # 堆叠矩阵 batch  x class x seq
-        supporting_logits = torch.stack((supporting_logits_start, supporting_logits_end), dim=1)
+        # 头尾表示加起来取平均值
+        supporting_logits_add = torch.add(supporting_logits_start, supporting_logits_end)
+        supporting_logits_add = torch.div(supporting_logits_add, 2)
+        # 转换为  batch  x class x seq
+        supporting_logits_for_loss = supporting_logits_add.permute(0, 2, 1)
 
         if supporting_fact_label is not None:
             # 对于序列标注来说，需要reshape一下
@@ -189,7 +198,7 @@ class SentenceChoice(BertPreTrainedModel):
 
             # CrossEntropyLoss
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(supporting_logits, supporting_fact_label)
+            loss = loss_fct(supporting_logits_for_loss, supporting_fact_label)
 
             # supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
             #                                                          torch.full_like(supporting_fact_label, -100))
@@ -200,4 +209,4 @@ class SentenceChoice(BertPreTrainedModel):
             # loss = true_loss_proportion * loss_True + (1 - true_loss_proportion) * loss_False
             return loss, None
 
-        return None, supporting_logits
+        return None, supporting_logits_for_loss

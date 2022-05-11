@@ -245,32 +245,32 @@ class Trainer(object):
             # choiceDict[_id] = choice # 概率
             assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
             if self.hparams.testFunction == '0':
-                _is_all_rigth = True
+                _is_all_right = True
                 new_context_list = []
                 for context, fact, c in zip(context_list, supporting_facts_list, choice):
                     if fact == c:
                         right += 1
                     else:
                         wrong += 1
-                        _is_all_rigth = False
+                        _is_all_right = False
                     if c:
                         new_context_list.append(context)
-                if _is_all_rigth:
+                if _is_all_right:
                     all_right += 1
                 else:
                     has_wrong += 1
             elif self.hparams.testFunction == '1':
-                _is_rigth = []
+                _is_right = []
                 new_context_list = []
                 choose_best = sorted(range(len(choice)), key=choice.__getitem__, reverse=True)[:self.hparams.bestN]
                 bottom = choice[choose_best[-1]]
                 temp_choice = [True if i >= bottom else False for i in choice]
                 for cb in choose_best:
                     new_context_list.append(context_list[cb])
-                    _rigth = supporting_facts_list[cb]
-                    _is_rigth.append(_rigth)
+                    _right = supporting_facts_list[cb]
+                    _is_right.append(_right)
                 fact_count = supporting_facts_list.count(1)
-                right_count = _is_rigth.count(1)
+                right_count = _is_right.count(1)
                 if right_count == fact_count or right_count == self.hparams.bestN:
                     all_right += 1
                     right += self.hparams.bestN
@@ -325,6 +325,7 @@ class Trainer(object):
             epoch_iterator.set_description('Epoch: {}/{}'.format(epoch, total_epoch))  # 设置前缀 一般为epoch的信息
             # TODO train
             self.model.train()
+            running_loss, count = 0.0, 0
             self.optimizer.zero_grad()  # reset gradient
             for step, batch in enumerate(epoch_iterator):
                 batch = tuple(t.to(self.hparams.device) for t in batch)
@@ -335,7 +336,7 @@ class Trainer(object):
                     "supporting_position": batch[3],
                     "supporting_fact_label": batch[4],
                 }
-                b_batch = batch[4].tolist()
+                # b_batch = batch[4].tolist()
                 # for b in b_batch:
                 #     sum1 = [i for i in b if i == 1]
                 #     sum0 = [i for i in b if i == 0]
@@ -348,6 +349,7 @@ class Trainer(object):
                     loss = loss / self.hparams.gradient_accumulation_steps
                 # back propagation
                 loss.backward()
+                running_loss += loss.item()
                 # update parameters of net
                 # 累计一定step 再进行反向传播 梯度清零
                 if (step + 1) % self.hparams.gradient_accumulation_steps == 0:
@@ -364,7 +366,16 @@ class Trainer(object):
                     # 这里只清除 optimizer 添加到group中的参数梯度即可
                     self.optimizer.zero_grad()  # reset gradient 清空过往梯度，为下一波梯度累加做准备
                     global_step += 1
-                # epoch_iterator.set_postfix(loss=loss.item())
+                    count += 1
+
+                # 迭代global_step轮次之后 记录 平均loss
+                if global_step % 20 == 0 and count != 0:
+                    self.log.info("step: {}, loss: {:.3f}".format(global_step, running_loss / count))
+                    # summery_writer
+                    self.summery_writer.add_scalar('Train/running_loss', running_loss / count, global_step=global_step,
+                                                   walltime=None)
+                    running_loss, count = 0.0, 0
+                # 更新进度条
                 UsedTime = "{}".format(str(datetime.utcnow() - train_begin_time).split('.')[0])
                 Step = "{:6d}".format(step)
                 Iter = "{:4d}".format(global_step)
