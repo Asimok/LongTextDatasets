@@ -25,10 +25,13 @@ class Trainer(object):
         self.log = get_logger(log_name="Trainer")
         self.mode = mode
         self.model = None
-        self.dataset = None
+        self.eval_dataset = None
+        self.eval_examples = None
+        self.train_dataset = None
         self.train_dataloader = None
-        # 设置随机种子
-        self.set_seed()
+        self.eval_dataloader = None
+        self.batch_size = self.hparams.per_gpu_batch_size * max(1, len(self.hparams.gpu_ids))
+        self.set_seed()  # 设置随机种子
         self.summery_writer = self.init_SummaryWriter()
         self.pretrained_model_config, self.tokenizer = self.Load_pretrained_model_config()
         self.global_step, self.global_epoch, self.optimizer, self.scheduler = self.build_model()
@@ -69,13 +72,19 @@ class Trainer(object):
         # TODO dataloader部分重写
         #  data
 
-        dataset, examples, tokenizer = load_dataset(self.hparams, evaluate=False)
-        self.dataset = dataset
-        batch_size = self.hparams.per_gpu_batch_size * max(1, len(self.hparams.gpu_ids))
-        train_sampler = RandomSampler(dataset)
-        train_dataloader = DataLoader(dataset, sampler=train_sampler, batch_size=batch_size, drop_last=True)
+        # 训练集
+        self.log.info("Load dev dataset from file %s ...", self.hparams.devFile)
+        self.train_dataset, train_examples, tokenizer = load_dataset(self.hparams, mode="train")
+        train_sampler = RandomSampler(self.train_dataset)
+        train_dataloader = DataLoader(self.train_dataset, sampler=train_sampler, batch_size=self.batch_size,
+                                      drop_last=True)
         self.train_dataloader = train_dataloader
         t_total = len(train_dataloader) // self.hparams.gradient_accumulation_steps * self.hparams.num_train_epochs
+        # 验证集
+        self.log.info("Load dev dataset from file %s ...", self.hparams.devFile)
+        self.eval_dataset, self.eval_examples, tokenizer = load_dataset(self.hparams, mode="eval")
+        eval_sampler = SequentialSampler(self.eval_dataset)
+        self.eval_dataloader = DataLoader(self.eval_dataset, sampler=eval_sampler, batch_size=self.batch_size)
 
         """
         Adam
@@ -182,7 +191,7 @@ class Trainer(object):
     def test(self, model=None, save_dir=None):
         self.log.info("***** Prepare for Test *****")
         self.log.info("Load dataset from file %s ...", self.hparams.testFile)
-        dataset, examples, tokenizer = load_dataset(self.hparams, evaluate=True)
+        dataset, examples, tokenizer = load_dataset(self.hparams, mode=True)
         batch_size = self.hparams.per_gpu_batch_size * max(1, len(self.hparams.gpu_ids))
         eval_sampler = SequentialSampler(dataset)
         eval_dataloader = DataLoader(dataset, sampler=eval_sampler, batch_size=batch_size)
@@ -318,8 +327,145 @@ class Trainer(object):
         self.log.info("Save result.")
         return results
 
+    def eval(self, save_dir=None):
+        self.log.info("***** Prepare for Eval *****")
+        self.log.info("Load dataset from file %s ...", self.hparams.devFile)
+
+        self.log.info("***** Running eval *****")
+        self.log.info("Num examples = %d", len(self.eval_dataset))
+        self.log.info("Batch size = %d", self.batch_size)
+        choiceList = []
+
+        for step, batch in enumerate(tqdm(self.eval_dataloader, desc="Evaluating")):
+            self.model.eval()
+            batch = tuple(t.to(self.hparams.device) for t in batch)
+
+            with torch.no_grad():
+                inputs = {
+                    "question_id": batch[0],
+                    "contexts_id": batch[1],
+                    "syntactic_graph": batch[2],
+                    "supporting_position": batch[3],
+                    "supporting_fact_label": batch[4],
+                }
+                eval_loss, supporting_logits = self.model(**inputs)
+                if len(self.hparams.gpu_ids) > 1:
+                    eval_loss = eval_loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
+                # summery_writer
+                self.summery_writer.add_scalar('Val/loss/' + str(save_dir), eval_loss.item(), global_step=step,
+                                               walltime=None)
+
+            if self.hparams.testFunction == '0':
+                choice = supporting_logits[:, 1, :] > supporting_logits[:, 0, :]
+                choice = choice.detach().cpu().tolist()
+                supporting_position = batch[3].detach().cpu().tolist()
+                for c, s in zip(choice, supporting_position):
+                    nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                    choiceList.append(nc)
+            elif self.hparams.testFunction == '1':
+                supporting_logits = supporting_logits.softmax(dim=1)
+                choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()  # 预测为正例的概率
+                supporting_position = batch[3].detach().cpu().tolist()
+                for c, s in zip(choice_logits, supporting_position):
+                    nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                    choiceList.append(nc)
+            else:
+                self.log.info("Error testFunction {}.".format(self.hparams.testFunction))
+                return
+
+        self.log.info("Evaluation done.")
+
+        choiceDict = {}
+        choiceDict_PR = {}
+        right, wrong = 0, 0
+        all_right, has_wrong = 0, 0
+        datas = []
+        self.log.info("Evaluate EM and Compute new dataset.")
+        for [_id, context_list, question, supporting_facts_list, answer], choice in tqdm(
+                zip(self.eval_examples, choiceList),
+                desc="Computing"):
+            if len(choice) == 0:
+                continue
+            temp_choice = copy.deepcopy(choice)
+            # choiceDict[_id] = choice # 概率
+            assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
+            if self.hparams.testFunction == '0':
+                _is_all_right = True
+                new_context_list = []
+                for context, fact, c in zip(context_list, supporting_facts_list, choice):
+                    if fact == c:
+                        right += 1
+                    else:
+                        wrong += 1
+                        _is_all_right = False
+                    if c:
+                        new_context_list.append(context)
+                if _is_all_right:
+                    all_right += 1
+                else:
+                    has_wrong += 1
+            elif self.hparams.testFunction == '1':
+                _is_right = []
+                new_context_list = []
+                choose_best = sorted(range(len(choice)), key=choice.__getitem__, reverse=True)[:self.hparams.bestN]
+                bottom = choice[choose_best[-1]]
+                temp_choice = [True if i >= bottom else False for i in choice]
+                for cb in choose_best:
+                    new_context_list.append(context_list[cb])
+                    _right = supporting_facts_list[cb]
+                    _is_right.append(_right)
+                fact_count = supporting_facts_list.count(1)
+                right_count = _is_right.count(1)
+                if right_count == fact_count or right_count == self.hparams.bestN:
+                    all_right += 1
+                    right += self.hparams.bestN
+                else:
+                    has_wrong += 1
+                    _wrong = min(fact_count - right_count, self.hparams.bestN - right_count)
+                    wrong += _wrong
+                    right += self.hparams.bestN - _wrong
+            else:
+                self.log.info("Error testFunction {}.".format(self.hparams.testFunction))
+                return
+            choiceDict[_id] = temp_choice
+            choiceDict_PR[_id] = choice
+            datas.append(makeSquad(_id, new_context_list, question, answer))
+
+        newSquadDataset = {'version': "HotpotQA", 'data': datas}
+        self.log.info("Save predictions.")
+        # 新建文件夹
+        out_path = os.path.join(self.hparams.eval_path, save_dir)
+        if not os.path.exists(out_path):
+            os.makedirs(out_path)
+
+        output_choice_file = os.path.join(self.hparams.eval_path, save_dir, "choice.json")
+        output_choice_PR_file = os.path.join(self.hparams.eval_path, save_dir, "PR.json")
+        output_squad_file = os.path.join(self.hparams.eval_path, save_dir, "squad.json")
+
+        with open(output_choice_file, 'w') as cf:
+            json.dump(choiceDict, cf, ensure_ascii=False, indent=4)
+        with open(output_choice_PR_file, 'w') as cf:
+            json.dump(choiceDict_PR, cf, ensure_ascii=False, indent=4)
+        with open(output_squad_file, 'w') as sf:
+            json.dump(newSquadDataset, sf, ensure_ascii=False, indent=4)
+
+        self.log.info("Evaluate prediction.")
+        results = {
+            "acc": right / (right + wrong),
+            "all_acc": all_right / (all_right + has_wrong),
+        }
+        self.log.info(results)
+        result_file = os.path.join(out_path, "result.json")
+
+        with open(result_file, 'w') as rf:
+            json.dump(results, rf, ensure_ascii=False, indent=4)
+        self.log.info("Save eval result.")
+        return results
+
     def run_train_epoch(self, this_epoch, best_acc, train_begin_time):
-        # sum_len = []
+        self.log.info("***** Running train *****")
+        self.log.info("Num examples = %d", len(self.train_dataset))
+        self.log.info("Batch size = %d", self.batch_size)
         epoch = self.global_epoch + this_epoch
         global_step = self.global_step
         total_epoch = int(self.hparams.num_train_epochs)
@@ -331,7 +477,7 @@ class Trainer(object):
             # TODO train
             self.model.train()
             running_loss, count = 0.0, 0
-            self.optimizer.zero_grad()  # reset gradient
+            # self.optimizer.zero_grad()  # reset gradient
             for step, batch in enumerate(epoch_iterator):
                 batch = tuple(t.to(self.hparams.device) for t in batch)
                 inputs = {
@@ -394,10 +540,11 @@ class Trainer(object):
         # np_len = np.array(sum_len)
         # print(np_len.mean())
         # evaluate
-        if self.hparams.do_test:
+
+        if self.hparams.do_eval:
             self.log.info("***** Running evaluation *****")
             self.model.eval()
-            results = self.test(model=self.model, save_dir="epoch-{}".format(epoch))
+            results = self.eval(save_dir="eval-epoch-{}".format(epoch))
             if results['acc'] > best_acc['acc']:
                 best_acc = results
                 best_acc['best_epoch'] = epoch

@@ -85,21 +85,21 @@ class SentenceChoice(BertPreTrainedModel):
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.5,  # 遗忘门参数
+            dropout=0.3,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.5,  # 遗忘门参数
+            dropout=0.3,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.5,  # 遗忘门参数
+            dropout=0.3,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
@@ -121,7 +121,7 @@ class SentenceChoice(BertPreTrainedModel):
         self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size * 3,
                                         intermediate_size=self.hidden_size, output_size=2)  # 二分类
 
-        # self.init_weights()
+        self.init_weights()
 
     def forward(self,
                 question_id=None,
@@ -259,6 +259,6 @@ class SentenceChoice(BertPreTrainedModel):
             # loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
             # loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
             # loss = true_loss_proportion * loss_True + (1 - true_loss_proportion) * loss_False
-            return loss, None
+            return loss, supporting_logits_for_loss
 
         return None, supporting_logits_for_loss

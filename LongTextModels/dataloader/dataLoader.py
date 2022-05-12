@@ -117,14 +117,15 @@ def miniGraphToSmallGraph(trees: list, length: int) -> list:
     return graph + (length - len(graph)) * [length - 1]
 
 
-def load_dataset(config, evaluate=False):
+def load_dataset(config, mode="train"):
     """
+    :mode: train dev test
     :return: dataset, examples, context_offsets, tokenizer
     """
     tokenizer = AutoTokenizer.from_pretrained(config.pretrainedModelPath, use_fast=True)
     temp_file = "cache_{}_{}_{}".format(
-        "dev" if evaluate else "train",
-        config.testFile if evaluate else config.trainFile,
+        mode,
+        config.testFile if mode else config.trainFile,
         config.pretrainedModelPath.strip('/').split("/")[-1],
     )
     temp_file = os.path.join(config.cachePath, temp_file)
@@ -136,7 +137,7 @@ def load_dataset(config, evaluate=False):
     else:
         logger.info("Creating dataset ...")
 
-    examples = get_examples(os.path.join(config.datasetPath, config.testFile if evaluate else config.trainFile))
+    examples = get_examples(os.path.join(config.datasetPath, config.testFile if mode else config.trainFile))
     # maybe use 10 passages can divide in to different parts and use BERT
     question_ids = []
     contexts_ids = []
@@ -199,12 +200,13 @@ def load_dataset(config, evaluate=False):
     all_supporting_positions = torch.tensor(supporting_positions, dtype=torch.long)
     all_supporting_fact_labels = torch.tensor(supporting_fact_labels, dtype=torch.long)
 
-    if evaluate:
+    if mode == "train" or mode == "eval":
         dataset = TensorDataset(
             all_question_ids,
             all_contexts_ids,
             all_syntactic_graphs,
             all_supporting_positions,
+            all_supporting_fact_labels,
         )
     else:
         dataset = TensorDataset(
@@ -212,7 +214,6 @@ def load_dataset(config, evaluate=False):
             all_contexts_ids,
             all_syntactic_graphs,
             all_supporting_positions,
-            all_supporting_fact_labels,
         )
 
     logger.info("Saving dataset into cached file %s", temp_file)

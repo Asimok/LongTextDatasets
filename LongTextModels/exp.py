@@ -11,4 +11,4 @@ import torch
 from LongTextModels.config import config
 from LongTextModels.dataloader.dataLoader import load_dataset
 args =config
-dataset, examples, tokenizer = load_dataset(config=config, evaluate=False)
+dataset, examples, tokenizer = load_dataset(config=config, mode=False)
