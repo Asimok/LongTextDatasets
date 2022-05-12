@@ -24,13 +24,13 @@ def gelu(x):
 
 
 class BertFeedForward(nn.Module):
-    def __init__(self, config, input_size, intermediate_size, output_size):
+    def __init__(self, _config, input_size, intermediate_size, output_size):
         super(BertFeedForward, self).__init__()
         self.dense = nn.Linear(input_size, intermediate_size)
         self.affine = nn.Linear(intermediate_size, output_size)
         self.act_fn = gelu
         # torch.nn.functional.relu
-        self.LayerNorm = BERTLayerNorm(config)
+        self.LayerNorm = BERTLayerNorm(_config)
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
@@ -41,13 +41,13 @@ class BertFeedForward(nn.Module):
 
 
 class BERTLayerNorm(nn.Module):
-    def __init__(self, config, variance_epsilon=1e-12):
+    def __init__(self, _config, variance_epsilon=1e-12):
         """
         Construct a layernorm module in the TF style (epsilon inside the square root).
         """
         super(BERTLayerNorm, self).__init__()
-        self.gamma = nn.Parameter(torch.ones(config.hidden_size))
-        self.beta = nn.Parameter(torch.zeros(config.hidden_size))
+        self.gamma = nn.Parameter(torch.ones(_config.hidden_size))
+        self.beta = nn.Parameter(torch.zeros(_config.hidden_size))
         self.variance_epsilon = variance_epsilon
 
     def forward(self, x):
@@ -58,10 +58,10 @@ class BERTLayerNorm(nn.Module):
 
 
 class SentenceChoice(BertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-        bertModel = BertModel(config, add_pooling_layer=False)
-        self.hidden_size = config.hidden_size
+    def __init__(self, _config):
+        super().__init__(_config)
+        bertModel = BertModel(_config, add_pooling_layer=False)
+        self.hidden_size = _config.hidden_size
         self.num_layers = 3
         self.bert = bertModel.embeddings.word_embeddings
         self.q_lstm = nn.LSTM(
@@ -72,22 +72,38 @@ class SentenceChoice(BertPreTrainedModel):
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
-        self.c_lstm = nn.LSTM(
-            input_size=self.hidden_size,  # 输入大小为转化后的词向量
-            hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
-            num_layers=self.num_layers,  # 堆叠层数
+        # self.c_lstm = nn.LSTM(
+        #     input_size=self.hidden_size,  # 输入大小为转化后的词向量
+        #     hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
+        #     num_layers=self.num_layers,  # 堆叠层数
+        #     dropout=0.5,  # 遗忘门参数
+        #     bidirectional=True,  # 双向LSTM
+        #     batch_first=True,
+        # )
+
+        self.c_lstm = nn.ModuleList([nn.LSTM(
+            input_size=_config.hidden_size,  # 输入大小为转化后的词向量
+            hidden_size=_config.hidden_size // 2,  # 隐藏层大小
+            num_layers=1,  # 堆叠层数
+            dropout=0.5,  # 遗忘门参数
+            bidirectional=True,  # 双向LSTM
+            batch_first=True,
+        ), nn.LSTM(
+            input_size=_config.hidden_size,  # 输入大小为转化后的词向量
+            hidden_size=_config.hidden_size // 2,  # 隐藏层大小
+            num_layers=1,  # 堆叠层数
+            dropout=0.5,  # 遗忘门参数
+            bidirectional=True,  # 双向LSTM
+            batch_first=True,
+        ), nn.LSTM(
+            input_size=_config.hidden_size,  # 输入大小为转化后的词向量
+            hidden_size=_config.hidden_size // 2,  # 隐藏层大小
+            num_layers=1,  # 堆叠层数
             dropout=0.5,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
-        # self.c_lstm = nn.ModuleList(nn.LSTM(
-        #     input_size=config.hidden_size * 2,  # 输入大小为转化后的词向量
-        #     hidden_size=config.hidden_size // 2,  # 隐藏层大小
-        #     num_layers=3,  # 堆叠层数
-        #     dropout=0.5,  # 遗忘门参数
-        #     bidirectional=True,  # 双向LSTM
-        #     batch_first=True,
-        # ) for _ in range(self.num_layers))
+        ])
 
         # Attention
         # weight_w即为公式中的h_s(参考系)
@@ -100,12 +116,12 @@ class SentenceChoice(BertPreTrainedModel):
         # 双向 lstm 维度x2
         self.attention = BartAttention(embed_dim=self.hidden_size * 2, num_heads=1)
 
-        self.decoder1 = BertFeedForward(config, input_size=self.hidden_size * 1,
+        self.decoder1 = BertFeedForward(_config, input_size=self.hidden_size * 1,
                                         intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 3)
-        self.decoder2 = BertFeedForward(config, input_size=self.hidden_size * 3,
+        self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size * 3,
                                         intermediate_size=self.hidden_size, output_size=2)  # 二分类
 
-        self.init_weights()
+        # self.init_weights()
 
     def forward(self,
                 question_id=None,
@@ -120,15 +136,57 @@ class SentenceChoice(BertPreTrainedModel):
         contexts_embedding = self.bert(contexts_id)
         # LSTM
         question_embedding, _ = self.q_lstm(question_embedding)
-        contexts_embedding, _ = self.c_lstm(contexts_embedding)
 
-        # for i in range(self.num_layers):
-        #     tree_embedding = torch.stack(
-        #         [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
-        #          range(batch)],
-        #         dim=0)
-        #     new_contexts_embedding = torch.cat([contexts_embedding, tree_embedding], dim=2)
-        #     contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
+        # # 句法分析树只拼接一层
+        # tree_embedding_forward = torch.stack(
+        #     [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
+        #      range(batch)],
+        #     dim=0)
+        # tree_embedding_backward = torch.stack(
+        #     [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
+        #                                                           index=syntactic_graph[i].expand_as(
+        #                                                               contexts_embedding[i].T).T,
+        #                                                           src=contexts_embedding[i]) for i in range(batch)],
+        #     dim=0)
+        # tree_count_backward = torch.stack(
+        #     [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
+        #                                                           index=syntactic_graph[i].expand_as(
+        #                                                               contexts_embedding[i].T).T,
+        #                                                           src=torch.ones_like(contexts_embedding[i])) for i
+        #      in range(batch)],
+        #     dim=0)
+        # tree_count_backward = tree_count_backward.where(tree_count_backward > 0,
+        #                                                 torch.ones_like(tree_count_backward))
+        # tree_embedding_backward = tree_embedding_backward / tree_count_backward
+        #
+        # new_contexts_embedding = contexts_embedding + tree_embedding_forward + tree_embedding_backward
+        # contexts_embedding, _ = self.c_lstm(new_contexts_embedding)
+
+        # 句法分析树
+        for i in range(self.num_layers):
+            tree_embedding_forward = torch.stack(
+                [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
+                 range(batch)],
+                dim=0)
+            tree_embedding_backward = torch.stack(
+                [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
+                                                                      index=syntactic_graph[i].expand_as(
+                                                                          contexts_embedding[i].T).T,
+                                                                      src=contexts_embedding[i]) for i in range(batch)],
+                dim=0)
+            tree_count_backward = torch.stack(
+                [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
+                                                                      index=syntactic_graph[i].expand_as(
+                                                                          contexts_embedding[i].T).T,
+                                                                      src=torch.ones_like(contexts_embedding[i])) for i
+                 in range(batch)],
+                dim=0)
+            tree_count_backward = tree_count_backward.where(tree_count_backward > 0,
+                                                            torch.ones_like(tree_count_backward))
+            tree_embedding_backward = tree_embedding_backward / tree_count_backward
+
+            new_contexts_embedding = contexts_embedding + tree_embedding_forward + tree_embedding_backward
+            contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
 
         # TODO 新加
         # Attention [q,k]

@@ -156,7 +156,7 @@ def test(args, model=None, savedir=""):
             inputs = {
                 "question_id": batch[0],
                 "contexts_id": batch[1],
-                "syntatic_graph": batch[2],
+                "syntactic_graph": batch[2],
                 "supporting_position": batch[3],
             }
             _, supporting_logits = model(**inputs)
@@ -189,17 +189,17 @@ def test(args, model=None, savedir=""):
         choiceDict[_id] = choice
         assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
         if args.testFunction == '0':
-            _is_all_rigth = True
+            _is_all_right = True
             new_context_list = []
             for context, fact, c in zip(context_list, supporting_facts_list, choice):
                 if fact == c:
                     right += 1
                 else:
                     wrong += 1
-                    _is_all_rigth = False
+                    _is_all_right = False
                 if c:
                     new_context_list.append(context)
-            if _is_all_rigth:
+            if _is_all_right:
                 all_right += 1
             else:
                 has_wrong += 1

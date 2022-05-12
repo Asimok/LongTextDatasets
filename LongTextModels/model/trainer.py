@@ -221,7 +221,7 @@ class Trainer(object):
                     choiceList.append(nc)
             elif self.hparams.testFunction == '1':
                 supporting_logits = supporting_logits.softmax(dim=1)
-                choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()
+                choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()  # 预测为正例的概率
                 supporting_position = batch[3].detach().cpu().tolist()
                 for c, s in zip(choice_logits, supporting_position):
                     nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
@@ -233,6 +233,7 @@ class Trainer(object):
         self.log.info("Evaluation done.")
 
         choiceDict = {}
+        choiceDict_PR = {}
         right, wrong = 0, 0
         all_right, has_wrong = 0, 0
         datas = []
@@ -283,6 +284,7 @@ class Trainer(object):
                 self.log.info("Error testFunction {}.".format(self.hparams.testFunction))
                 return
             choiceDict[_id] = temp_choice
+            choiceDict_PR[_id] = choice
             datas.append(makeSquad(_id, new_context_list, question, answer))
 
         newSquadDataset = {'version': "HotpotQA", 'data': datas}
@@ -293,10 +295,13 @@ class Trainer(object):
             os.makedirs(out_path)
 
         output_choice_file = os.path.join(self.hparams.eval_path, save_dir, "choice.json")
+        output_choice_PR_file = os.path.join(self.hparams.eval_path, save_dir, "PR.json")
         output_squad_file = os.path.join(self.hparams.eval_path, save_dir, "squad.json")
 
         with open(output_choice_file, 'w') as cf:
             json.dump(choiceDict, cf, ensure_ascii=False, indent=4)
+        with open(output_choice_PR_file, 'w') as cf:
+            json.dump(choiceDict_PR, cf, ensure_ascii=False, indent=4)
         with open(output_squad_file, 'w') as sf:
             json.dump(newSquadDataset, sf, ensure_ascii=False, indent=4)
 
