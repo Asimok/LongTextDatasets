@@ -73,7 +73,7 @@ class Trainer(object):
         #  data
 
         # 训练集
-        self.log.info("Load dev dataset from file %s ...", self.hparams.devFile)
+        self.log.info("Load dev dataset from file %s ...", self.hparams.trainFile)
         self.train_dataset, train_examples, tokenizer = load_dataset(self.hparams, mode="train")
         train_sampler = RandomSampler(self.train_dataset)
         train_dataloader = DataLoader(self.train_dataset, sampler=train_sampler, batch_size=self.batch_size,
@@ -84,7 +84,8 @@ class Trainer(object):
         self.log.info("Load dev dataset from file %s ...", self.hparams.devFile)
         self.eval_dataset, self.eval_examples, tokenizer = load_dataset(self.hparams, mode="eval")
         eval_sampler = SequentialSampler(self.eval_dataset)
-        self.eval_dataloader = DataLoader(self.eval_dataset, sampler=eval_sampler, batch_size=self.batch_size)
+        self.eval_dataloader = DataLoader(self.eval_dataset, sampler=eval_sampler, batch_size=self.batch_size,
+                                          drop_last=True)
 
         """
         Adam

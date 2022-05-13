@@ -35,7 +35,7 @@ cachePath = '/data2/maqi/LongTextDatasets/LongTextModels/cache'  # 预处理数�
 
 # 存储路径
 output_dir = '/data2/maqi/LongTextDatasets/LongTextModels/output/'
-current_model = 'exp_512'  # 不同模型的日志保存目录
+current_model = 'learning_rate'  # 不同模型的日志保存目录
 model_saved_path = output_dir + current_model  # 当前训练模型保存路径
 log_path = model_saved_path + '/logs/log.txt'  # 日志保存在当前训练的模型文件夹下
 tensorboard_path = model_saved_path + '/tensorboard_runs'  # output_dir + current_model + tensorboard_path + date
@@ -59,7 +59,7 @@ load_part_model = False  # 加载已训练一部分的最优模型
 # train
 per_gpu_batch_size = 12  # 每个gpu上的batch
 num_train_epochs = 10
-learning_rate = 1e-4
+learning_rate = 1e-3
 warmup_steps = 100
 warmup_proportion = 0.05
 gradient_accumulation_steps = 1  # 这个操作就相当于将batch_size扩大了gradient_accumulate_steps倍

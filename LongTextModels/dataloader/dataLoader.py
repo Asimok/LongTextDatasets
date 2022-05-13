@@ -8,6 +8,7 @@ from spacy.tokens import Doc
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
 from transformers import AutoTokenizer, is_torch_available
+
 from LongTextModels.tools.logger import get_logger
 
 logger = get_logger(log_name="DropDataloader")
@@ -117,15 +118,22 @@ def miniGraphToSmallGraph(trees: list, length: int) -> list:
     return graph + (length - len(graph)) * [length - 1]
 
 
-def load_dataset(config, mode="train"):
+def load_dataset(config, mode=None):
     """
     :mode: train dev test
     :return: dataset, examples, context_offsets, tokenizer
     """
+    global fileName
     tokenizer = AutoTokenizer.from_pretrained(config.pretrainedModelPath, use_fast=True)
+    if mode == "train":
+        fileName = config.trainFile
+    elif mode == "eval":
+        fileName = config.devFile
+    elif mode == "test":
+        fileName = config.testFile
     temp_file = "cache_{}_{}_{}".format(
         mode,
-        config.testFile if mode else config.trainFile,
+        fileName,
         config.pretrainedModelPath.strip('/').split("/")[-1],
     )
     temp_file = os.path.join(config.cachePath, temp_file)
@@ -136,8 +144,13 @@ def load_dataset(config, mode="train"):
         return dataset, examples, tokenizer
     else:
         logger.info("Creating dataset ...")
+    if mode == "train":
+        examples = get_examples(os.path.join(config.datasetPath, config.trainFile))
+    elif mode == "eval":
+        examples = get_examples(os.path.join(config.datasetPath, config.devFile))
+    elif mode == "test":
+        examples = get_examples(os.path.join(config.datasetPath, config.testFile))
 
-    examples = get_examples(os.path.join(config.datasetPath, config.testFile if mode else config.trainFile))
     # maybe use 10 passages can divide in to different parts and use BERT
     question_ids = []
     contexts_ids = []

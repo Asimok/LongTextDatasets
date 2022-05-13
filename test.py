@@ -1,27 +1,26 @@
 class Solution:
+    def largestGoodInteger(self, num: str) -> str:
+        ans = []
+        if len(num) == 3:
+            if num[0] == num[1] and num[1] == num[2]:
+                return num
 
-    def appealSum(self, s: str) -> int:
-
-        def create_ngram_list(input_list, ngram_num):
-            ngram_list = []
-            if len(input_list) <= ngram_num:
-                ngram_list.append(input_list)
-            else:
-                for tmp in zip(*[input_list[i:] for i in range(ngram_num)]):
-                    tmp = "".join(tmp)
-                    ngram_list.append(tmp)
-            sum = 0
-            for l in ngram_list:
-                sum += len(set(list(l)))
-            return sum
-
-        ans = 0
-        for i in range(len(s)):
-            ans += create_ngram_list(s, i+1)
-        return ans
+        for i in range(len(num) - 2):
+            if num[i] == num[i + 1] and num[i + 1] == num[i + 2]:
+                ans.append(num[i:i + 3])
+        if len(ans) == 0:
+            return ""
+        max_val = int(ans[0])
+        for j in ans:
+            temp = int(j)
+            if temp > max_val:
+                max_val = temp
+        if max_val == 0:
+            return "000"
+        return str(max_val)
 
 
-a = "abbca"
+a ="6777133339"
 c = Solution()
-d = c.appealSum(a)
+d = c.largestGoodInteger(a)
 print(d)

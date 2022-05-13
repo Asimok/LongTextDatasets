@@ -117,8 +117,8 @@ class SentenceChoice(BertPreTrainedModel):
         self.attention = BartAttention(embed_dim=self.hidden_size * 2, num_heads=1)
 
         self.decoder1 = BertFeedForward(_config, input_size=self.hidden_size * 1,
-                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 3)
-        self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size * 3,
+                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 2)
+        self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size * 2,
                                         intermediate_size=self.hidden_size, output_size=2)  # 二分类
 
         self.init_weights()
