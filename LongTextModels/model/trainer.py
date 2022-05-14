@@ -521,7 +521,7 @@ class Trainer(object):
                     count += 1
 
                 # 迭代global_step轮次之后 记录 平均loss
-                if global_step % 20 == 0 and count != 0:
+                if global_step % 200 == 0 and count != 0:
                     self.log.info("step: {}, loss: {:.3f}".format(global_step, running_loss / count))
                     # summery_writer
                     self.summery_writer.add_scalar('Train/running_loss', running_loss / count, global_step=global_step,

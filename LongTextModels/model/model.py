@@ -85,21 +85,21 @@ class SentenceChoice(BertPreTrainedModel):
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.3,  # 遗忘门参数
+            dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.3,  # 遗忘门参数
+            dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.3,  # 遗忘门参数
+            dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
