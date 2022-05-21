@@ -42,13 +42,16 @@ def train(args):
     t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
 
     # Prepare optimizer and schedule (linear warmup and decay)
-    no_decay = ["bias", "LayerNorm.weight"]
+    # no_decay = ["bias", "LayerNorm.weight"]
+    # optimizer_grouped_parameters = [
+    #     {
+    #         "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+    #         "weight_decay": 0.0,
+    #     },
+    #     {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
+    # ]
     optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-        {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
+        {"params": [p for n, p in model.named_parameters() if not n.startswith("loss_fn")], "weight_decay": 0.0}
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=1e-8)
     scheduler = get_linear_schedule_with_warmup(
@@ -86,10 +89,11 @@ def train(args):
                 "supporting_fact_label": batch[4],
             }
 
-            loss, _ = model(**inputs)
+            loss, lossF = model(**inputs)
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
+                lossF = lossF.mean()
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
@@ -103,7 +107,7 @@ def train(args):
             # at += t
             # all_loss/=
             # print(t)
-            epoch_iterator.set_postfix(loss=loss.item())
+            epoch_iterator.set_postfix(loss=loss.item(), lossF=lossF.item())
             # epoch_iterator.set_postfix(loss=loss.item())
             # print(loss.item()/t)
             # print(all_loss / at)
@@ -156,7 +160,7 @@ def test(args, model=None, savedir=""):
             inputs = {
                 "question_id": batch[0],
                 "contexts_id": batch[1],
-                "syntactic_graph": batch[2],
+                "syntatic_graph": batch[2],
                 "supporting_position": batch[3],
             }
             _, supporting_logits = model(**inputs)
@@ -189,17 +193,17 @@ def test(args, model=None, savedir=""):
         choiceDict[_id] = choice
         assert len(context_list) == len(choice), "Predict Length Maybe Wrong."
         if args.testFunction == '0':
-            _is_all_right = True
+            _is_all_rigth = True
             new_context_list = []
             for context, fact, c in zip(context_list, supporting_facts_list, choice):
                 if fact == c:
                     right += 1
                 else:
                     wrong += 1
-                    _is_all_right = False
+                    _is_all_rigth = False
                 if c:
                     new_context_list.append(context)
-            if _is_all_right:
+            if _is_all_rigth:
                 all_right += 1
             else:
                 has_wrong += 1

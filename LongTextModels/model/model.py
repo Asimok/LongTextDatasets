@@ -1,15 +1,15 @@
-import logging
+import copy
 import math
 
 import torch
 import torch.nn.functional as F
+from reloss.cls import ReLoss
 from torch import nn
-from torch.nn import CrossEntropyLoss, BCELoss, BCEWithLogitsLoss
+from torch.nn import CrossEntropyLoss
 from transformers import BertPreTrainedModel, BertModel
 from transformers.models.bart.modeling_bart import BartAttention
 
 from LongTextModels.config import config
-from LongTextModels.config.config import true_loss_proportion
 from LongTextModels.tools.logger import get_logger
 
 logger = get_logger(log_name="model")
@@ -64,6 +64,7 @@ class SentenceChoice(BertPreTrainedModel):
         self.hidden_size = _config.hidden_size
         self.num_layers = 3
         self.bert = bertModel.embeddings.word_embeddings
+        self.RELoss_fn = ReLoss()
         self.q_lstm = nn.LSTM(
             input_size=self.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
@@ -85,21 +86,21 @@ class SentenceChoice(BertPreTrainedModel):
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.8,  # 遗忘门参数
+            # dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.8,  # 遗忘门参数
+            # dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            dropout=0.8,  # 遗忘门参数
+            # dropout=0.8,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
@@ -110,6 +111,7 @@ class SentenceChoice(BertPreTrainedModel):
         # nn. Parameter的作用是参数是需要梯度的
         self.weight_W = nn.Parameter(torch.Tensor(self.hidden_size, 2 * self.hidden_size))
         self.weight_proj = nn.Parameter(torch.Tensor(2 * self.hidden_size, 1))
+
         # 对weight_W、weight_proj进行初始化
         nn.init.uniform_(self.weight_W, -0.1, 0.1)
         nn.init.uniform_(self.weight_proj, -0.1, 0.1)
@@ -235,8 +237,8 @@ class SentenceChoice(BertPreTrainedModel):
         supporting_logits_sentence = torch.stack(sentences, dim=0)
 
         # 转换为  batch  x class x seq
-        supporting_logits_for_loss = supporting_logits_sentence.permute(0, 2, 1)
-
+        supporting_logits_for_ce_loss = supporting_logits_sentence.permute(0, 2, 1)
+        supporting_fact_label_for_ce_loss = copy.deepcopy(supporting_fact_label)
         if supporting_fact_label is not None:
             # 对于序列标注来说，需要reshape一下
             # supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
@@ -249,8 +251,22 @@ class SentenceChoice(BertPreTrainedModel):
             # loss = loss_fct(supporting_logits, supporting_fact_label_ignore_100.float())
 
             # CrossEntropyLoss
+
+            """
+            加上re_loss
+            """
+            supporting_logits = torch.cat(supporting_logits_sentence.unbind(dim=0), dim=0)  # [b*s,2]
+            supporting_fact_label = torch.cat(supporting_fact_label.unbind(dim=0), dim=-1)  # [b*s]
+
+            used_index = torch.where(supporting_fact_label != -100)[0]  # 参与训练的句子
+
+            supporting_logits = supporting_logits.index_select(dim=0, index=used_index)  # [u,2]
+            supporting_fact_label = supporting_fact_label.index_select(dim=-1, index=used_index)  # [u]
+
+            re_loss = self.RELoss_fn(supporting_logits, supporting_fact_label)
+            # CrossEntropyLoss
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(supporting_logits_for_loss, supporting_fact_label)
+            loss = loss_fct(supporting_logits_for_ce_loss, supporting_fact_label_for_ce_loss)
 
             # supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
             #                                                          torch.full_like(supporting_fact_label, -100))
@@ -259,6 +275,6 @@ class SentenceChoice(BertPreTrainedModel):
             # loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
             # loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
             # loss = true_loss_proportion * loss_True + (1 - true_loss_proportion) * loss_False
-            return loss, supporting_logits_for_loss
+            return re_loss, loss, supporting_logits_for_ce_loss
 
-        return None, supporting_logits_for_loss
+        return None, supporting_logits_for_ce_loss

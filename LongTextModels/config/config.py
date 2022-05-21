@@ -20,15 +20,15 @@ def make_dir():
 
 # 资源路径
 # wbc
-datasetPath = '/data2/wangbingchao/dataset/HotpotQA/'
-trainFile = 'hotpot_train_v1.1.json'
-devFile = 'hotpot_dev_fullwiki_v1.json'
-testFile = 'hotpot_dev_fullwiki_v1.json'
+# datasetPath = '/data2/wangbingchao/dataset/HotpotQA/'
+# trainFile = 'hotpot_train_v1.1.json'
+# devFile = 'hotpot_dev_fullwiki_v1.json'
+# testFile = 'hotpot_dev_fullwiki_v1.json'
 # maqi
-# datasetPath = '/data2/maqi/LongTextDatasets/HotpotQA_datasets/'
-# trainFile = 'simplify_hotpot_train_v1.1.json'
-# devFile = 'simplify_hotpot_dev_fullwiki_v1.json'
-# testFile = 'simplify_hotpot_dev_fullwiki_v1.json'
+datasetPath = '/data2/maqi/LongTextDatasets/HotpotQA_datasets/'
+trainFile = 'simplify_hotpot_train_v1.1.json'
+devFile = 'simplify_hotpot_dev_fullwiki_v1.json'
+testFile = 'simplify_hotpot_dev_fullwiki_v1.json'
 
 pretrainedModelPath = '/data2/wangbingchao/database/bert_pretrained/bert-base-uncased'
 cachePath = '/data2/maqi/LongTextDatasets/LongTextModels/cache'  # 预处理数据的缓存
@@ -46,8 +46,8 @@ model_config_file_path = model_saved_path + '/config.txt'  # output_dir + curren
 make_dir()
 
 # GPU
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
-gpu_ids = [0, 1, 2, 3]  # 注意：在程序中设置gpu_id仍要从0开始，gpu_ids为 CUDA_VISIBLE_DEVICES 的索引
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+gpu_ids = [0]  # 注意：在程序中设置gpu_id仍要从0开始，gpu_ids为 CUDA_VISIBLE_DEVICES 的索引
 device = "cuda"
 
 # main

@@ -59,16 +59,7 @@ class Trainer(object):
         # 创建模型
         self.model = SentenceChoice.from_pretrained(self.hparams.pretrainedModelPath, from_tf=False,
                                                     config=self.pretrained_model_config)
-        # GPU or CPU
-        self.log.info('use %s to train', self.hparams.device)
-        self.model.to(self.hparams.device)
 
-        # Use Multi-GPUs
-        if len(self.hparams.gpu_ids) > 1 and self.hparams.device != 'cpu':
-            self.model = nn.DataParallel(self.model, device_ids=self.hparams.gpu_ids)
-            self.log.info("Use Multi-GPUs" + str(self.hparams.gpu_ids))
-        else:
-            self.log.info("Use 1 GPU")
         # TODO dataloader部分重写
         #  data
 
@@ -93,12 +84,26 @@ class Trainer(object):
         # Prepare optimizer and schedule (linear warmup and decay)
         """
         no_decay = ["bias", "LayerNorm.weight"]
+        # optimizer_grouped_parameters = [
+        #     {
+        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+        #         "weight_decay": 0.0,
+        #     },
+        #     {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+        #      "weight_decay": 0.0},
+        #     {"params": [p for n, p in self.model.named_parameters() if not n.startswith("loss_fn")],
+        #      "weight_decay": 0.0}
+        # ]
         optimizer_grouped_parameters = [
+            # {"params": [p for n, p in self.model.named_parameters() if n.startswith("RELoss_fn")],
+            #  "weight_decay": 0.0},
             {
-                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
+                           not any(nd in n for nd in no_decay)],
                 "weight_decay": 0.0,
             },
-            {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+            {"params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
+                        any(nd in n for nd in no_decay)],
              "weight_decay": 0.0},
         ]
         optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8,
@@ -118,6 +123,17 @@ class Trainer(object):
             global_step = checkpoint['step']
             global_epoch = checkpoint['epoch'] + 1
             self.log.info("Load model finished!!!")
+
+        # GPU or CPU
+        self.log.info('use %s to train', self.hparams.device)
+        self.model.to(self.hparams.device)
+
+        # Use Multi-GPUs
+        if len(self.hparams.gpu_ids) > 1 and self.hparams.device != 'cpu':
+            self.model = nn.DataParallel(self.model, device_ids=self.hparams.gpu_ids)
+            self.log.info("Use Multi-GPUs" + str(self.hparams.gpu_ids))
+        else:
+            self.log.info("Use 1 GPU")
 
         self.log.info("Define model finished!!!")
 
@@ -349,7 +365,7 @@ class Trainer(object):
                     "supporting_position": batch[3],
                     "supporting_fact_label": batch[4],
                 }
-                eval_loss, supporting_logits = self.model(**inputs)
+                re_loss, eval_loss, supporting_logits = self.model(**inputs)
                 if len(self.hparams.gpu_ids) > 1:
                     eval_loss = eval_loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
                 # summery_writer
@@ -472,7 +488,7 @@ class Trainer(object):
         total_epoch = int(self.hparams.num_train_epochs)
         if self.hparams.do_train:
             bar_format = '{desc}{percentage:2.0f}%|{bar}|{n_fmt}/{total_fmt}[{elapsed}<{remaining}{postfix}]'
-            epoch_iterator = tqdm(self.train_dataloader, ncols=120,
+            epoch_iterator = tqdm(self.train_dataloader, ncols=140,
                                   bar_format=bar_format)
             epoch_iterator.set_description('Epoch: {}/{}'.format(epoch, total_epoch))  # 设置前缀 一般为epoch的信息
             # TODO train
@@ -493,15 +509,18 @@ class Trainer(object):
                 #     sum1 = [i for i in b if i == 1]
                 #     sum0 = [i for i in b if i == 0]
                 #     sum_len.append(len(sum1) / len(sum0))
-                loss, _ = self.model(**inputs)
+                re_loss, loss, _ = self.model(**inputs)
                 # loss regularization
                 if len(self.hparams.gpu_ids) > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
                 if self.hparams.gradient_accumulation_steps > 1:
                     loss = loss / self.hparams.gradient_accumulation_steps
                 # back propagation
-                loss.backward()
-                running_loss += loss.item()
+                # loss.backward()
+                # running_loss += loss.item()
+
+                re_loss.backward()
+                running_loss += re_loss.item()
                 # update parameters of net
                 # 累计一定step 再进行反向传播 梯度清零
                 if (step + 1) % self.hparams.gradient_accumulation_steps == 0:
@@ -531,9 +550,11 @@ class Trainer(object):
                 UsedTime = "{}".format(str(datetime.utcnow() - train_begin_time).split('.')[0])
                 Step = "{:6d}".format(step)
                 Iter = "{:4d}".format(global_step)
+                RELoss = "{:7f}".format(re_loss.item())
                 Loss = "{:7f}".format(loss.item())
                 lr = "{:10f}".format(self.optimizer.param_groups[0]['lr'])
-                epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), Loss=str(Loss),
+                epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), RELoss=str(RELoss),
+                                           Loss=str(Loss),
                                            lr=str(lr))
             self.global_step = global_step
         # 原始样本中正负样本的比例
