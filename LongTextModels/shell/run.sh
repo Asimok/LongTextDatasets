@@ -1,5 +1,5 @@
 /data2/maqi/LongTextDatasets/LongTextModels/main/main.py
-cp
+cp -r /data0/wangbingchao/temp/HotpotQA/model ./
 
 nohup python -m LongTextModels.main.main.py >> log.txt 2>&1 &
 

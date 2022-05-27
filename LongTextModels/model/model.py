@@ -1,13 +1,13 @@
 import copy
 import math
+from typing import Tuple, Optional
 
 import torch
 import torch.nn.functional as F
 from reloss.cls import ReLoss
-from torch import nn
+from torch import nn, Tensor
 from torch.nn import CrossEntropyLoss
 from transformers import BertPreTrainedModel, BertModel
-from transformers.models.bart.modeling_bart import BartAttention
 
 from LongTextModels.config import config
 from LongTextModels.tools.logger import get_logger
@@ -23,13 +23,52 @@ def gelu(x):
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 
+class Attention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    def __init__(self, embed_dim, bias=True, ):
+        super().__init__()
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+    def forward(
+            self,
+            query,
+            key: Tensor,
+            output_attentions=False,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        """Input shape: Time(SeqLen) x Batch x Channel"""
+        bsz, tgt_len, embed_dim = query.size()
+
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(key)
+
+        src_len = k.size(1)
+        attn_weights = torch.bmm(q, k.transpose(1, 2))
+        assert attn_weights.size() == (bsz, tgt_len, src_len)
+
+        # 注释
+        attn_weights = F.softmax(attn_weights, dim=-1)
+
+        attn_output = torch.bmm(attn_weights, v)
+        assert attn_output.size() == (bsz, tgt_len, embed_dim)
+        attn_output = self.out_proj(attn_output)
+        # attn_output = self.out_proj(attn_weights)
+
+        if output_attentions:
+            return attn_output, attn_weights
+        return attn_output, None
+
+
 class BertFeedForward(nn.Module):
     def __init__(self, _config, input_size, intermediate_size, output_size):
         super(BertFeedForward, self).__init__()
         self.dense = nn.Linear(input_size, intermediate_size)
         self.affine = nn.Linear(intermediate_size, output_size)
         self.act_fn = gelu
-        # torch.nn.functional.relu
         self.LayerNorm = BERTLayerNorm(_config)
 
     def forward(self, hidden_states):
@@ -57,14 +96,39 @@ class BERTLayerNorm(nn.Module):
         return self.gamma * x + self.beta
 
 
+class WeightedFocalLoss(nn.Module):
+    """Non weighted version of Focal Loss"""
+
+    def __init__(self, alpha=.25, gamma=2):
+        super(WeightedFocalLoss, self).__init__()
+        self.alpha = nn.Parameter(torch.tensor([alpha, 1 - alpha]))
+        # self.alpha = torch.tensor([alpha, 1 - alpha]).to('cuda')
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        # 应该去掉不参与训练的-100 数据部分
+        input_softmax = F.softmax(inputs, dim=1)
+        input_softmax = input_softmax[:, 1]
+        input_softmax = input_softmax.type(torch.float)
+        targets = targets.type(torch.float)
+        BCE_loss = F.binary_cross_entropy_with_logits(input=input_softmax, target=targets, reduction='none')
+
+        targets = targets.type(torch.long)
+        at = self.alpha.gather(0, targets.data.view(-1))
+        pt = torch.exp(-BCE_loss)
+        F_loss = at * (1 - pt) ** self.gamma * BCE_loss
+        return F_loss.mean()
+
+
 class SentenceChoice(BertPreTrainedModel):
     def __init__(self, _config):
         super().__init__(_config)
         bertModel = BertModel(_config, add_pooling_layer=False)
         self.hidden_size = _config.hidden_size
-        self.num_layers = 3
+        self.num_layers = 2
         self.bert = bertModel.embeddings.word_embeddings
-        self.RELoss_fn = ReLoss()
+        self.RELoss_fn = ReLoss(pretrained=False)
+        self.focal_loss = WeightedFocalLoss()
         self.q_lstm = nn.LSTM(
             input_size=self.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
@@ -73,54 +137,30 @@ class SentenceChoice(BertPreTrainedModel):
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
-        # self.c_lstm = nn.LSTM(
-        #     input_size=self.hidden_size,  # 输入大小为转化后的词向量
-        #     hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
-        #     num_layers=self.num_layers,  # 堆叠层数
-        #     dropout=0.5,  # 遗忘门参数
-        #     bidirectional=True,  # 双向LSTM
-        #     batch_first=True,
-        # )
 
         self.c_lstm = nn.ModuleList([nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            # dropout=0.8,  # 遗忘门参数
+            dropout=0.6,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         ), nn.LSTM(
             input_size=_config.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=_config.hidden_size // 2,  # 隐藏层大小
             num_layers=1,  # 堆叠层数
-            # dropout=0.8,  # 遗忘门参数
-            bidirectional=True,  # 双向LSTM
-            batch_first=True,
-        ), nn.LSTM(
-            input_size=_config.hidden_size,  # 输入大小为转化后的词向量
-            hidden_size=_config.hidden_size // 2,  # 隐藏层大小
-            num_layers=1,  # 堆叠层数
-            # dropout=0.8,  # 遗忘门参数
+            dropout=0.2,  # 遗忘门参数
             bidirectional=True,  # 双向LSTM
             batch_first=True,
         )
         ])
 
         # Attention
-        # weight_w即为公式中的h_s(参考系)
-        # nn. Parameter的作用是参数是需要梯度的
-        self.weight_W = nn.Parameter(torch.Tensor(self.hidden_size, 2 * self.hidden_size))
-        self.weight_proj = nn.Parameter(torch.Tensor(2 * self.hidden_size, 1))
-
-        # 对weight_W、weight_proj进行初始化
-        nn.init.uniform_(self.weight_W, -0.1, 0.1)
-        nn.init.uniform_(self.weight_proj, -0.1, 0.1)
-        # 双向 lstm 维度x2
-        self.attention = BartAttention(embed_dim=self.hidden_size * 2, num_heads=1)
+        self.attention = Attention(embed_dim=_config.hidden_size)
 
         self.decoder1 = BertFeedForward(_config, input_size=self.hidden_size * 1,
-                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size * 2)
-        self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size * 2,
+                                        intermediate_size=self.hidden_size * 1, output_size=self.hidden_size)
+        self.decoder2 = BertFeedForward(_config, input_size=self.hidden_size,
                                         intermediate_size=self.hidden_size, output_size=2)  # 二分类
 
         self.init_weights()
@@ -138,31 +178,6 @@ class SentenceChoice(BertPreTrainedModel):
         contexts_embedding = self.bert(contexts_id)
         # LSTM
         question_embedding, _ = self.q_lstm(question_embedding)
-
-        # # 句法分析树只拼接一层
-        # tree_embedding_forward = torch.stack(
-        #     [torch.index_select(input=contexts_embedding[i], dim=0, index=syntactic_graph[i]) for i in
-        #      range(batch)],
-        #     dim=0)
-        # tree_embedding_backward = torch.stack(
-        #     [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
-        #                                                           index=syntactic_graph[i].expand_as(
-        #                                                               contexts_embedding[i].T).T,
-        #                                                           src=contexts_embedding[i]) for i in range(batch)],
-        #     dim=0)
-        # tree_count_backward = torch.stack(
-        #     [torch.zeros_like(contexts_embedding[i]).scatter_add_(dim=0,
-        #                                                           index=syntactic_graph[i].expand_as(
-        #                                                               contexts_embedding[i].T).T,
-        #                                                           src=torch.ones_like(contexts_embedding[i])) for i
-        #      in range(batch)],
-        #     dim=0)
-        # tree_count_backward = tree_count_backward.where(tree_count_backward > 0,
-        #                                                 torch.ones_like(tree_count_backward))
-        # tree_embedding_backward = tree_embedding_backward / tree_count_backward
-        #
-        # new_contexts_embedding = contexts_embedding + tree_embedding_forward + tree_embedding_backward
-        # contexts_embedding, _ = self.c_lstm(new_contexts_embedding)
 
         # 句法分析树
         for i in range(self.num_layers):
@@ -190,22 +205,11 @@ class SentenceChoice(BertPreTrainedModel):
             new_contexts_embedding = contexts_embedding + tree_embedding_forward + tree_embedding_backward
             contexts_embedding, _ = self.c_lstm[i](new_contexts_embedding)
 
-        # TODO 新加
-        # Attention [q,k]
-        states = torch.cat([question_embedding, contexts_embedding], dim=1)
-        # states与self.weight_W矩阵相乘，然后做tanh
-        u = torch.tanh(torch.matmul(states, self.weight_W))
-        # u与self.weight_proj矩阵相乘,得到score
-        att = torch.matmul(u, self.weight_proj)
-        # softmax
-        att_score = F.softmax(att, dim=1)
-        # 加权求和
-        scored_x = states * att_score
-        # encoding = torch.sum(scored_x, dim=1)
+        # Attention
+        contexts_attention, _ = self.attention(contexts_embedding, question_embedding)  # [b,c,h]
         # 线性层
-        # 只取context部分 [q,k]
-        scored_x = scored_x[:, question_embedding.shape[1]:, :]
-        supporting_logits = self.decoder1(scored_x)
+
+        supporting_logits = self.decoder1(contexts_attention)
         supporting_logits = self.decoder2(supporting_logits)
 
         """
@@ -243,15 +247,6 @@ class SentenceChoice(BertPreTrainedModel):
             # 对于序列标注来说，需要reshape一下
             # supporting_logits = supporting_logits.reshape(-1, 2)  # 两个类别
             # supporting_fact_label = supporting_fact_label.view(-1)
-
-            # BCE Loss
-            # supporting_fact_label_ignore_100 = torch.where(supporting_fact_label == -100,
-            #                                                0, supporting_fact_label)
-            # loss_fct = BCEWithLogitsLoss()
-            # loss = loss_fct(supporting_logits, supporting_fact_label_ignore_100.float())
-
-            # CrossEntropyLoss
-
             """
             加上re_loss
             """
@@ -265,16 +260,13 @@ class SentenceChoice(BertPreTrainedModel):
 
             re_loss = self.RELoss_fn(supporting_logits, supporting_fact_label)
             # CrossEntropyLoss
-            loss_fct = CrossEntropyLoss()
+            loss_fct = CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(supporting_logits_for_ce_loss, supporting_fact_label_for_ce_loss)
+            """
+            focal loss
+            """
+            loss_focal = self.focal_loss(supporting_logits, supporting_fact_label)
+            # print(loss_focal)
+            return re_loss, loss, loss_focal, supporting_logits_for_ce_loss
 
-            # supporting_fact_label_True = supporting_fact_label.where(supporting_fact_label == 1,
-            #                                                          torch.full_like(supporting_fact_label, -100))
-            # supporting_fact_label_False = supporting_fact_label.where(supporting_fact_label == 0,
-            #                                                           torch.full_like(supporting_fact_label, -100))
-            # loss_True = loss_fct(supporting_logits, supporting_fact_label_True)
-            # loss_False = loss_fct(supporting_logits, supporting_fact_label_False)
-            # loss = true_loss_proportion * loss_True + (1 - true_loss_proportion) * loss_False
-            return re_loss, loss, supporting_logits_for_ce_loss
-
-        return None, supporting_logits_for_ce_loss
+        return None, None, None, supporting_logits_for_ce_loss

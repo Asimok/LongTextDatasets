@@ -84,28 +84,27 @@ class Trainer(object):
         # Prepare optimizer and schedule (linear warmup and decay)
         """
         no_decay = ["bias", "LayerNorm.weight"]
-        # optimizer_grouped_parameters = [
-        #     {
-        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
-        #         "weight_decay": 0.0,
-        #     },
-        #     {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
-        #      "weight_decay": 0.0},
-        #     {"params": [p for n, p in self.model.named_parameters() if not n.startswith("loss_fn")],
-        #      "weight_decay": 0.0}
-        # ]
         optimizer_grouped_parameters = [
-            # {"params": [p for n, p in self.model.named_parameters() if n.startswith("RELoss_fn")],
-            #  "weight_decay": 0.0},
             {
-                "params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
-                           not any(nd in n for nd in no_decay)],
-                "weight_decay": 0.0,
+                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": 1e-2,
             },
-            {"params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
-                        any(nd in n for nd in no_decay)],
-             "weight_decay": 0.0},
+            {"params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+             "weight_decay": 0.0}
         ]
+
+        # optimizer_grouped_parameters = [
+        #     {"params": [p for n, p in self.model.named_parameters() if n.startswith("RELoss_fn")],
+        #      "weight_decay": 0.0},
+        #     # {
+        #     #     "params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
+        #     #                not any(nd in n for nd in no_decay)],
+        #     #     "weight_decay": 0.0,
+        #     # },
+        #     # {"params": [p for n, p in self.model.named_parameters() if not n.startswith("RELoss_fn") if
+        #     #             any(nd in n for nd in no_decay)],
+        #     #  "weight_decay": 0.0},
+        # ]
         optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=1e-8,
                           correct_bias=False)  # 要重现BertAdam特定的行为，请设置correct_bias = False
         scheduler = get_linear_schedule_with_warmup(
@@ -136,6 +135,7 @@ class Trainer(object):
             self.log.info("Use 1 GPU")
 
         self.log.info("Define model finished!!!")
+        self.model.zero_grad()
 
         return global_step, global_epoch, optimizer, scheduler
 
@@ -351,10 +351,11 @@ class Trainer(object):
         self.log.info("***** Running eval *****")
         self.log.info("Num examples = %d", len(self.eval_dataset))
         self.log.info("Batch size = %d", self.batch_size)
+        self.model.eval()
         choiceList = []
 
         for step, batch in enumerate(tqdm(self.eval_dataloader, desc="Evaluating")):
-            self.model.eval()
+
             batch = tuple(t.to(self.hparams.device) for t in batch)
 
             with torch.no_grad():
@@ -365,11 +366,19 @@ class Trainer(object):
                     "supporting_position": batch[3],
                     "supporting_fact_label": batch[4],
                 }
-                re_loss, eval_loss, supporting_logits = self.model(**inputs)
+
+                re_loss, eval_loss, focal_loss, supporting_logits = self.model(**inputs)
                 if len(self.hparams.gpu_ids) > 1:
-                    eval_loss = eval_loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
+                    re_loss = re_loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
+                    eval_loss = eval_loss.mean()
+                    focal_loss = focal_loss.mean()
+
                 # summery_writer
+                self.summery_writer.add_scalar('Val/re_loss/' + str(save_dir), re_loss.item(), global_step=step,
+                                               walltime=None)
                 self.summery_writer.add_scalar('Val/loss/' + str(save_dir), eval_loss.item(), global_step=step,
+                                               walltime=None)
+                self.summery_writer.add_scalar('Val/focal_loss/' + str(save_dir), focal_loss.item(), global_step=step,
                                                walltime=None)
 
             if self.hparams.testFunction == '0':
@@ -477,6 +486,7 @@ class Trainer(object):
         with open(result_file, 'w') as rf:
             json.dump(results, rf, ensure_ascii=False, indent=4)
         self.log.info("Save eval result.")
+        self.model.train()
         return results
 
     def run_train_epoch(self, this_epoch, best_acc, train_begin_time):
@@ -488,7 +498,7 @@ class Trainer(object):
         total_epoch = int(self.hparams.num_train_epochs)
         if self.hparams.do_train:
             bar_format = '{desc}{percentage:2.0f}%|{bar}|{n_fmt}/{total_fmt}[{elapsed}<{remaining}{postfix}]'
-            epoch_iterator = tqdm(self.train_dataloader, ncols=140,
+            epoch_iterator = tqdm(self.train_dataloader, ncols=150,
                                   bar_format=bar_format)
             epoch_iterator.set_description('Epoch: {}/{}'.format(epoch, total_epoch))  # 设置前缀 一般为epoch的信息
             # TODO train
@@ -509,18 +519,27 @@ class Trainer(object):
                 #     sum1 = [i for i in b if i == 1]
                 #     sum0 = [i for i in b if i == 0]
                 #     sum_len.append(len(sum1) / len(sum0))
-                re_loss, loss, _ = self.model(**inputs)
+                re_loss, loss, focal_loss, _ = self.model(**inputs)
                 # loss regularization
                 if len(self.hparams.gpu_ids) > 1:
-                    loss = loss.mean()  # mean() to average on multi-gpu parallel (not distributed) training
+                    loss = loss.mean()
+                    re_loss = re_loss.mean()
+                    focal_loss = focal_loss.mean()
+                    # mean() to average on multi-gpu parallel (not distributed) training
                 if self.hparams.gradient_accumulation_steps > 1:
                     loss = loss / self.hparams.gradient_accumulation_steps
+                    re_loss = re_loss / self.hparams.gradient_accumulation_steps
+                    focal_loss = focal_loss / self.hparams.gradient_accumulation_steps
                 # back propagation
                 # loss.backward()
                 # running_loss += loss.item()
 
-                re_loss.backward()
-                running_loss += re_loss.item()
+                # re_loss.backward()
+                # running_loss += re_loss.item()
+
+                focal_loss.backward()
+                running_loss += focal_loss.item()
+
                 # update parameters of net
                 # 累计一定step 再进行反向传播 梯度清零
                 if (step + 1) % self.hparams.gradient_accumulation_steps == 0:
@@ -533,7 +552,7 @@ class Trainer(object):
                     # optimizer the net
                     self.optimizer.step()
                     self.scheduler.step()  # Update learning rate schedule
-                    # self.model.zero_grad() #
+                    # self.model.zero_grad()
                     # 这里只清除 optimizer 添加到group中的参数梯度即可
                     self.optimizer.zero_grad()  # reset gradient 清空过往梯度，为下一波梯度累加做准备
                     global_step += 1
@@ -550,24 +569,18 @@ class Trainer(object):
                 UsedTime = "{}".format(str(datetime.utcnow() - train_begin_time).split('.')[0])
                 Step = "{:6d}".format(step)
                 Iter = "{:4d}".format(global_step)
-                RELoss = "{:7f}".format(re_loss.item())
                 Loss = "{:7f}".format(loss.item())
+                RELoss = "{:7f}".format(re_loss.item())
+                Focal_loss = "{:7f}".format(focal_loss.item())
                 lr = "{:10f}".format(self.optimizer.param_groups[0]['lr'])
-                epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), RELoss=str(RELoss),
-                                           Loss=str(Loss),
-                                           lr=str(lr))
+                epoch_iterator.set_postfix(UsedTime=UsedTime, Step=str(Step), Iter=str(Iter), Loss=str(Loss),
+                                           RELoss=str(RELoss), Focal_loss=str(Focal_loss), lr=str(lr))
             self.global_step = global_step
-        # 原始样本中正负样本的比例
-        # print(sum_len)
-        # np_len = np.array(sum_len)
-        # print(np_len.mean())
-        # evaluate
 
         if self.hparams.do_eval:
             self.log.info("***** Running evaluation *****")
-            self.model.eval()
             results = self.eval(save_dir="eval-epoch-{}".format(epoch))
-            if results['acc'] > best_acc['acc']:
+            if results['all_acc'] >= best_acc['all_acc']:
                 best_acc = results
                 best_acc['best_epoch'] = epoch
                 # 保存最优模型
