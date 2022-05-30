@@ -531,14 +531,14 @@ class Trainer(object):
                     re_loss = re_loss / self.hparams.gradient_accumulation_steps
                     focal_loss = focal_loss / self.hparams.gradient_accumulation_steps
                 # back propagation
-                loss.backward()
-                running_loss += loss.item()
+                # loss.backward()
+                # running_loss += loss.item()
 
                 # re_loss.backward()
                 # running_loss += re_loss.item()
 
-                # focal_loss.backward()
-                # running_loss += focal_loss.item()
+                focal_loss.backward()
+                running_loss += focal_loss.item()
 
                 # update parameters of net
                 # 累计一定step 再进行反向传播 梯度清零

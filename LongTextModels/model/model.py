@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from reloss.cls import ReLoss
 from torch import nn, Tensor
 from torch.nn import CrossEntropyLoss
+from torch.nn.modules.loss import _WeightedLoss
 from transformers import BertPreTrainedModel, BertModel
 
 from LongTextModels.config import config
@@ -120,6 +121,36 @@ class WeightedFocalLoss(nn.Module):
         return F_loss.mean()
 
 
+class CrossEntropyLossForFocalLoss(_WeightedLoss):
+    """
+    Examples::
+        # >>> loss = nn.CrossEntropyLoss()
+        # >>> input = torch.randn(3, 5, requires_grad=True)
+        # >>> target = torch.empty(3, dtype=torch.long).random_(5)
+        # >>> output = loss(input, target)
+        # >>> output.backward()
+    """
+    __constants__ = ['ignore_index', 'reduction']
+    ignore_index: int
+
+    def __init__(self, weight: Optional[Tensor] = None, size_average=None, ignore_index: int = -100,
+                 reduce=None, reduction: str = 'mean', alpha=.4, gamma=2) -> None:
+        super(CrossEntropyLossForFocalLoss, self).__init__(weight, size_average, reduce, reduction)
+        self.ignore_index = ignore_index
+        self.alpha = nn.Parameter(torch.tensor([alpha, 1 - alpha]), requires_grad=False)
+        self.gamma = gamma
+
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        assert self.weight is None or isinstance(self.weight, Tensor)
+        ce_loss = F.cross_entropy(input, target, weight=self.weight,
+                                  ignore_index=self.ignore_index, reduction=self.reduction)
+        targets = target.type(torch.long)
+        at = self.alpha.gather(0, targets.data.view(-1))
+        pt = torch.exp(-ce_loss)
+        F_loss = at * (1 - pt) ** self.gamma * ce_loss
+        return F_loss.mean()
+
+
 class SentenceChoice(BertPreTrainedModel):
     def __init__(self, _config):
         super().__init__(_config)
@@ -128,7 +159,8 @@ class SentenceChoice(BertPreTrainedModel):
         self.num_layers = 3
         self.bert = bertModel.embeddings.word_embeddings
         self.RELoss_fn = ReLoss(pretrained=False)
-        self.focal_loss = WeightedFocalLoss()
+        # self.focal_loss = WeightedFocalLoss()
+        self.focal_loss = CrossEntropyLossForFocalLoss()
         self.q_lstm = nn.LSTM(
             input_size=self.hidden_size,  # 输入大小为转化后的词向量
             hidden_size=self.hidden_size // 2,  # 隐藏层大小 双向 输出维度x2
@@ -258,12 +290,10 @@ class SentenceChoice(BertPreTrainedModel):
             loss = loss_fct(supporting_logits_for_ce_loss, supporting_fact_label_for_ce_loss)
             """
             focal loss
+            魔改自官方交叉熵损失
             """
-            # 提取参与训练的句子
-            used_index_for_focal_loss = torch.where(supporting_fact_label_for_ce_loss != -100)
-
-            loss_focal = self.focal_loss(supporting_logits, supporting_fact_label)
-            # print(loss_focal)
-            return re_loss, loss, loss_focal, supporting_logits_for_ce_loss
+            focal_loss = self.focal_loss(supporting_logits, supporting_fact_label)
+            # print(focal_loss)
+            return re_loss, loss, focal_loss, supporting_logits_for_ce_loss
 
         return None, None, None, supporting_logits_for_ce_loss
