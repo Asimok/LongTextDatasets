@@ -6,7 +6,6 @@ import random
 
 import numpy as np
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from tqdm import tqdm
 from transformers import AutoConfig, AdamW, get_linear_schedule_with_warmup
@@ -41,19 +40,13 @@ def train(args):
     train_dataloader = DataLoader(dataset, sampler=train_sampler, batch_size=args.batch_size)
     t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
 
-    # Prepare optimizer and schedule (linear warmup and decay)
-    # no_decay = ["bias", "LayerNorm.weight"]
-    # optimizer_grouped_parameters = [
-    #     {
-    #         "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-    #         "weight_decay": 0.0,
-    #     },
-    #     {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
-    # ]
+    # Prepare optimizer and schedule
     optimizer_grouped_parameters = [
         {"params": [p for n, p in model.named_parameters() if not n.startswith("loss_fn")], "weight_decay": 0.0}
     ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=1e-8)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=1e-8,
+                      correct_bias=False
+                      )  # 要重现BertAdam特定的行为，请设置correct_bias = False
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
     )
@@ -71,12 +64,12 @@ def train(args):
 
     global_step = 1
 
+    # test(args, model, savedir="epoch-{}".format(0))
+
     model.zero_grad()
 
     for epoch in range(int(args.num_train_epochs)):
         epoch_iterator = tqdm(train_dataloader, desc="Epoch " + str(epoch))
-        # all_loss = 0.0
-        # at = 0
         for step, batch in enumerate(epoch_iterator):
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -84,7 +77,7 @@ def train(args):
             inputs = {
                 "question_id": batch[0],
                 "contexts_id": batch[1],
-                "syntatic_graph": batch[2],
+                "syntactic_graph": batch[2],
                 "supporting_position": batch[3],
                 "supporting_fact_label": batch[4],
             }
@@ -98,19 +91,7 @@ def train(args):
                 loss = loss / args.gradient_accumulation_steps
 
             loss.backward()
-            # t = 0
-            # for sfl in batch[4].cpu().detach().tolist():
-            #     for sf in sfl:
-            #         if sf != -100:
-            #             t += 1
-            # all_loss += (loss.item() * t)
-            # at += t
-            # all_loss/=
-            # print(t)
             epoch_iterator.set_postfix(loss=loss.item(), lossF=lossF.item())
-            # epoch_iterator.set_postfix(loss=loss.item())
-            # print(loss.item()/t)
-            # print(all_loss / at)
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -118,7 +99,7 @@ def train(args):
                 model.zero_grad()
                 global_step += 1
 
-            # if step == 100:
+            # if step == 500 or step == 5000:
             #     test(args, model, savedir="epoch-{}".format(epoch))
 
         savePath = os.path.join(args.savePath, "epoch-{}".format(epoch))
@@ -160,7 +141,7 @@ def test(args, model=None, savedir=""):
             inputs = {
                 "question_id": batch[0],
                 "contexts_id": batch[1],
-                "syntatic_graph": batch[2],
+                "syntactic_graph": batch[2],
                 "supporting_position": batch[3],
             }
             _, supporting_logits = model(**inputs)
@@ -172,11 +153,12 @@ def test(args, model=None, savedir=""):
                 nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
                 choiceList.append(nc)
         elif args.testFunction == '1':
-            supporting_logits = supporting_logits.softmax(dim=1)
-            choice_logits = supporting_logits[:, 1, :].detach().cpu().tolist()
+            supporting_logits = supporting_logits.softmax(dim=-1)  # [b,s,2]
+            choice_logits = supporting_logits[:, :, 1].detach().cpu().tolist()
             supporting_position = batch[3].detach().cpu().tolist()
             for c, s in zip(choice_logits, supporting_position):
                 nc = [c[i] for i in range(len(c)) if s[2 * i + 1] != 0]
+                # nc = [c[s[i]] for i in range(len(c)) if s[2 * i + 1] != 0]
                 choiceList.append(nc)
         else:
             logger.info("Error testFunction {}.".format(args.testFunction))
@@ -208,15 +190,15 @@ def test(args, model=None, savedir=""):
             else:
                 has_wrong += 1
         elif args.testFunction == '1':
-            _is_rigth = []
+            _is_right = []
             new_context_list = []
             choose_best = sorted(range(len(choice)), key=choice.__getitem__, reverse=True)[:args.bestN]
             for cb in choose_best:
                 new_context_list.append(context_list[cb])
-                _rigth = supporting_facts_list[cb]
-                _is_rigth.append(_rigth)
+                _right = supporting_facts_list[cb]
+                _is_right.append(_right)
             fact_count = supporting_facts_list.count(1)
-            right_count = _is_rigth.count(1)
+            right_count = _is_right.count(1)
             if right_count == fact_count or right_count == args.bestN:
                 all_right += 1
                 right += args.bestN
@@ -297,6 +279,19 @@ if __name__ == '__main__':
     testFile = os.path.join(args.datasetPath, args.testFile)
     if not os.path.isfile(testFile):
         exit("There is no testFile OR testFile is not EXIST. " + testFile)
+
+    import time
+    import pynvml
+
+    while True:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(4)
+        meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        if meminfo.free / meminfo.total > 0.9:
+            break
+        print(meminfo.free / meminfo.total)
+        time.sleep(5)
+    time.sleep(10)
 
     if args.do_train:
         if not os.path.isfile(os.path.join(args.datasetPath, args.trainFile)):
