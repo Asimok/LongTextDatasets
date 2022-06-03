@@ -294,6 +294,7 @@ class SentenceChoice(BertPreTrainedModel):
             """
             focal_loss = self.focal_loss(supporting_logits, supporting_fact_label)
             # print(focal_loss)
+
             return re_loss, loss, focal_loss, supporting_logits_for_ce_loss
 
         return None, None, None, supporting_logits_for_ce_loss
